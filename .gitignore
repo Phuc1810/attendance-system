@@ -1,0 +1,11 @@
+﻿.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+.DS_Store
+
+# Local datasets and generated face images
+data/faces/*
+!data/faces/.gitkeep
