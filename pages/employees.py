@@ -1,8 +1,9 @@
-import streamlit as st
-import sqlite3
-import pandas as pd
+﻿import streamlit as st
 
-conn = sqlite3.connect("attendance.db", check_same_thread=False)
+from db.database import create_employee, get_employee_dataframe, initialize_database
+
+# Gọi hàm để đảm bảo file .db đã được tạo 
+initialize_database()
 
 st.title("Employee Management")
 
@@ -10,16 +11,12 @@ name = st.text_input("Employee Name")
 department = st.text_input("Department")
 
 if st.button("Add Employee"):
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO employees (name, department) VALUES (?, ?)",
-        (name, department)
-    )
-    conn.commit()
-    st.success("Employee added!")
+    if not name.strip() or not department.strip():
+        st.warning("Please enter both employee name and department.")
+    else:
+        employee_code = create_employee(name, department)
+        st.success(f"Employee added with code {employee_code}!")
 
 st.subheader("Employee List")
 
-df = pd.read_sql("SELECT * FROM employees", conn)
-
-st.dataframe(df)
+st.dataframe(get_employee_dataframe(), use_container_width=True)

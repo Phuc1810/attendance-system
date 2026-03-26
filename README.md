@@ -1,45 +1,66 @@
-# Project: Face Recognition Attendance System
+﻿# Face Recognition Attendance System
 
-# Technology:
-- Python, OpenCV, Streamlit, SQLite
-# How to run:
-- activate venv and run streamlit
-# Environment:
-- Window 10, Python 3.11, VS Code
-# Library: 
-- Streamlit and opencv-python
-# Result:
-- Streamlit can run, Camera laptop and Camera C200 (external devices) are activate
+Simple Streamlit application for employee management and face-based attendance experiments using OpenCV and SQLite.
 
-# Project structure:
+## Tech Stack
+
+- Python 3.11
+- Streamlit
+- OpenCV
+- SQLite
+- NumPy
+- Pandas
+
+## Features
+
+- Employee management page
+- Face detection from camera
+- Register face images from uploads or camera capture
+- Local SQLite database for employee records
+- Local dataset folder for face images
+
+## Project Structure
+
+```text
 Do_an_AI/
-├── app.py
-├── core/
-├── data/
-├── db/
-├── pages/
-├── attendance.db
-├── README.md
-└── .gitignore
+|-- app.py
+|-- core/
+|   |-- face_detect.py
+|   `-- save_face.py
+|-- data/
+|   `-- faces/
+|-- db/
+|   `-- database.py
+|-- pages/
+|   |-- employees.py
+|   |-- face_detection.py
+|   `-- register_face.py
+|-- README.md
+|-- requirements.txt
+`-- .gitignore
+```
 
-# Week 1 Progress (Completed)
-- Installed Python 3.11
-- Configured virtual environment (`.venv`)
-- Installed required libraries
-- Ran Streamlit succcessfully
-- Tested both cameras sucessfully
+## Setup
 
-# Week 2 Process (Completed)
-- Created project structure
-- Built streamlit multi-page foundation
-- Created SQLite database
-- Implemented employee management page
-- Added employee data display with pandas
+1. Create and activate a virtual environment.
+2. Install dependencies:
 
-# Week 3 Process (Completed)
-- Create core/face_detect.py: this is the AI part that processes facial recognition in the camera
-- Loaded Haar Cascade face detection model from OpenCV
-- Implenment detect_faces(frame) in face_detect.py: When a face appears in a camera's frame, system will create a frame to
-capture the face
-- Detected faces from both cameras successfully
-- Displayed face detection results on Streamlit page 
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the Streamlit app:
+
+```bash
+streamlit run app.py
+```
+
+## Data and Security Notes
+
+- `.venv`, `attendance.db`, `__pycache__`, and generated face images are excluded from Git.
+- Real face images should stay local and should not be pushed to a public repository.
+- The `data/faces/.gitkeep` file is included only to preserve the folder structure.
+
+## Current Limitation
+
+- Face detection currently uses OpenCV Haar Cascade and is intended for learning/demo use, not production biometric security.
