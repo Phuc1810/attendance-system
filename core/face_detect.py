@@ -1,28 +1,47 @@
-import cv2 #Nạp thư viện Opencv
+﻿import cv2
 
-#Load model Haar Cascade có sẵn trong OpenCV
-#cv2.data.haarcascades: đây là đường dẫn thư mục chứa sẵn file Haar Cascade của OpenCV
-# cv2.CascadeClassifier: dùng để load model phát hiện khuôn mặt
+DETECTION_SCALE = 0.5
+MIN_FACE_SIZE = (50, 50)
+
+#Mục tiêu: nhận diện bằng OpenCV để tìm vị trí mặt
+# Load model Haar Cascade co san trong OpenCV
 face_cascade = cv2.CascadeClassifier(
-     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-# hàm nhận 1 ảnh từ camera và trả về danh sách khuôn mặt
+
 def detect_faces(frame):
-     
-    #Nhận vào 1 frame ảnh màu từ camera
-    #Trả về:
-    #- faces: danh sách các khuôn mặt tìm được
-    #- gray: ảnh xám để debug nếu cần
+    """
+    Detect faces on a smaller frame to reduce CPU usage, then scale
+    coordinates back to the original frame size.
+    """
+    height, width = frame.shape[:2]
+    resized_width = max(1, int(width * DETECTION_SCALE))
+    resized_height = max(1, int(height * DETECTION_SCALE))
 
-    #Chuyển ảnh màu sang ảnh xám
-    gray = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+    resized_frame = cv2.resize(frame, (resized_width, resized_height))
+    gray = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
 
-    #Phát hiện có khuôn mặt trong ảnh
+    scaled_min_face = (
+        max(20, int(MIN_FACE_SIZE[0] * DETECTION_SCALE)),
+        max(20, int(MIN_FACE_SIZE[1] * DETECTION_SCALE)),
+    )
+
     faces = face_cascade.detectMultiScale(
         gray,
-        scaleFactor = 1.1,
-        minNeighbors = 5,
-        minSize = (50,50)
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=scaled_min_face,
     )
-    return faces, gray
+
+    scaled_faces = [
+        (
+            int(x / DETECTION_SCALE),
+            int(y / DETECTION_SCALE),
+            int(w / DETECTION_SCALE),
+            int(h / DETECTION_SCALE),
+        )
+        for (x, y, w, h) in faces
+    ]
+
+    return scaled_faces, gray

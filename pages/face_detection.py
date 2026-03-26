@@ -1,17 +1,25 @@
-﻿import cv2
+﻿#file test nhận khuôn mặt
+import cv2
 import streamlit as st
 
-from core.camera_stream import annotate_faces, get_or_create_camera, release_camera
+from core.camera_stream import (
+    annotate_faces,
+    get_or_create_camera,
+    release_camera,
+    update_detected_faces,
+)
 from core.face_detect import detect_faces
 
 PAGE_KEY = "face_detection"
 
-# Định nghĩa hàm render độc lập
+
+#Streamlit sẽ tự động chạy lại hàm liên tục 0.15s để tạo hiệu ứng video trực tiếp
 @st.fragment(run_every=0.15)
 def render_live_camera():
     if not st.session_state.get(f"{PAGE_KEY}_run_camera", False):
         return
 
+    #lấy khung hình cho AI tìm toạ độ
     cap = get_or_create_camera(
         st.session_state,
         PAGE_KEY,
@@ -29,29 +37,32 @@ def render_live_camera():
         release_camera(st.session_state, PAGE_KEY)
         return
 
-    faces, _ = detect_faces(frame)
-    faces_list = [tuple(int(value) for value in face) for face in faces]
-    st.session_state[f"{PAGE_KEY}_frame"] = frame.copy()
-    st.session_state[f"{PAGE_KEY}_faces"] = faces_list
+    #lấy khung hình cho AI tìm toạ độ mặt
+    faces_list = update_detected_faces(
+        st.session_state,
+        PAGE_KEY,
+        frame,
+        detect_faces,
+    )
 
+    #Vẽ khung xanh và hiển thị số khuôn mặt
     annotated_frame = annotate_faces(frame, faces_list)
     frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
     st.image(frame_rgb, channels="RGB")
 
-# Bọc toàn bộ logic luồng chính vào hàm main
+
 def main():
     st.title("Face Detection")
 
-    camera_index = st.selectbox("Choose camera", [0, 1], key=f"{PAGE_KEY}_camera_index")
+    st.selectbox("Choose camera", [0, 1], key=f"{PAGE_KEY}_camera_index")
     run_camera = st.checkbox("Run camera", key=f"{PAGE_KEY}_run_camera")
 
     if not run_camera:
         release_camera(st.session_state, PAGE_KEY)
         st.info("Turn on 'Run camera' to start live preview.")
 
-    # Chỉ gọi hàm render khi code được chạy thực sự
     render_live_camera()
 
-# Điểm neo an toàn, ngăn Codex tự động kích hoạt vòng lặp
+
 if __name__ == "__main__":
     main()

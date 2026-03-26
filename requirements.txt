@@ -1,4 +1,4 @@
-﻿streamlit
-opencv-python
-numpy
-pandas
+﻿streamlit==1.55.0
+opencv-python==4.13.0.92
+numpy==2.4.3
+pandas==2.3.3

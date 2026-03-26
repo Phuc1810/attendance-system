@@ -9,3 +9,6 @@ __pycache__/
 # Local datasets and generated face images
 data/faces/*
 !data/faces/.gitkeep
+
+# Trained model artifacts
+models/

@@ -1,8 +1,8 @@
-﻿import pandas as pd
-import streamlit as st
+﻿import streamlit as st
 
-from db.database import connect_db, initialize_database
+from db.database import create_employee, get_employee_dataframe, initialize_database
 
+# Gọi hàm để đảm bảo file .db đã được tạo 
 initialize_database()
 
 st.title("Employee Management")
@@ -14,16 +14,9 @@ if st.button("Add Employee"):
     if not name.strip() or not department.strip():
         st.warning("Please enter both employee name and department.")
     else:
-        with connect_db() as conn:
-            conn.execute(
-                "INSERT INTO employees (name, department) VALUES (?, ?)",
-                (name.strip(), department.strip()),
-            )
-        st.success("Employee added!")
+        employee_code = create_employee(name, department)
+        st.success(f"Employee added with code {employee_code}!")
 
 st.subheader("Employee List")
 
-with connect_db() as conn:
-    df = pd.read_sql("SELECT * FROM employees ORDER BY id", conn)
-
-st.dataframe(df)
+st.dataframe(get_employee_dataframe(), use_container_width=True)
