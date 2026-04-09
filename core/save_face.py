@@ -1,18 +1,21 @@
-﻿from pathlib import Path
+from pathlib import Path
 import shutil
 
 import cv2
 
-#Cắt ảnh, chỉnh kích thước và lưu vào đúng ổ cứng
+# Cat anh, chinh kich thuoc va luu vao dung o cung
 DATASET_DIR = Path("data/faces")
 FACE_SIZE = (200, 200)
+FACE_PADDING_RATIO = 0.18
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
 def ensure_dir(path):
     Path(path).mkdir(parents=True, exist_ok=True)
 
-#Kiểm tra xem thư mục data/face có mã NV đã tồn tại, nếu chưa thì tạo
+
+# Kiem tra xem thu muc data/face co ma NV da ton tai, neu chua thi tao
+
 def ensure_employee_folder(employee_code):
     employee_folder = DATASET_DIR / str(employee_code)
     ensure_dir(employee_folder)
@@ -21,6 +24,13 @@ def ensure_employee_folder(employee_code):
 
 def get_employee_folder(employee_code):
     return ensure_employee_folder(employee_code)
+
+
+def delete_employee_folder(employee_code):
+    employee_folder = DATASET_DIR / str(employee_code)
+
+    if employee_folder.exists():
+        shutil.rmtree(employee_folder)
 
 
 def _list_image_files(folder_path):
@@ -73,14 +83,41 @@ def sync_employee_face_folders(employee_rows):
         if legacy_folder.exists() and not any(legacy_folder.iterdir()):
             legacy_folder.rmdir()
 
-# Cắt ô chứa khuôn mặt và ép về kích thước 
-def crop_and_resize_face(image, face_box):
+
+def expand_face_box(face_box, image_shape, padding_ratio=FACE_PADDING_RATIO):
+    image_height, image_width = image_shape[:2]
     x, y, w, h = face_box
-    face_crop = image[y:y + h, x:x + w]
+    pad_x = int(w * padding_ratio)
+    pad_y = int(h * padding_ratio)
+
+    left = max(0, x - pad_x)
+    top = max(0, y - pad_y)
+    right = min(image_width, x + w + pad_x)
+    bottom = min(image_height, y + h + pad_y)
+
+    return left, top, right, bottom
+
+
+# Cat o chua khuon mat va ep ve kich thuoc
+
+def crop_and_resize_face(image, face_box, padding_ratio=FACE_PADDING_RATIO):
+    left, top, right, bottom = expand_face_box(
+        face_box,
+        image.shape,
+        padding_ratio=padding_ratio,
+    )
+    face_crop = image[top:bottom, left:right]
+
+    if face_crop.size == 0:
+        x, y, w, h = face_box
+        face_crop = image[y:y + h, x:x + w]
+
     face_crop = cv2.resize(face_crop, FACE_SIZE)
     return face_crop
 
-#Lưu xuống ổ cứng
+
+# Luu xuong o cung
+
 def save_face_image(employee_code, face_image):
     employee_folder = get_employee_folder(employee_code)
     next_number = get_next_image_number(employee_code)

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-#Thiết lập kết nối và kết nối database
+# Thiet lap ket noi va duong dan database
 DB_PATH = Path(__file__).resolve().parent.parent / "attendance.db"
 EMPLOYEE_CODE_PREFIX = "NV"
 EMPLOYEE_CODE_WIDTH = 3
@@ -13,7 +13,9 @@ EMPLOYEE_CODE_WIDTH = 3
 def connect_db():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
-#Thuật toán xử lý mã nhân viên
+
+# Thuat toan xu ly ma nhan vien
+
 def format_employee_code(number):
     return f"{EMPLOYEE_CODE_PREFIX}{number:0{EMPLOYEE_CODE_WIDTH}d}"
 
@@ -35,7 +37,9 @@ def _column_exists(conn, table_name, column_name):
 
 
 def _get_next_employee_code(conn):
-    rows = conn.execute("SELECT employee_code FROM employees WHERE employee_code IS NOT NULL").fetchall()
+    rows = conn.execute(
+        "SELECT employee_code FROM employees WHERE employee_code IS NOT NULL"
+    ).fetchall()
     used_numbers = {
         number
         for (employee_code,) in rows
@@ -138,8 +142,24 @@ def clear_employee_cache():
     get_employee_dataframe.clear()
 
 
+def validate_employee_fields(name, department):
+    errors = []
+
+    if not name or not name.strip():
+        errors.append("Employee name is required.")
+
+    if not department or not department.strip():
+        errors.append("Department is required.")
+
+    return errors
+
+
 def create_employee(name, department):
     initialize_database()
+    errors = validate_employee_fields(name, department)
+
+    if errors:
+        raise ValueError(" ".join(errors))
 
     with connect_db() as conn:
         employee_code = _get_next_employee_code(conn)
@@ -151,5 +171,48 @@ def create_employee(name, department):
     from core.save_face import ensure_employee_folder
 
     ensure_employee_folder(employee_code)
+    clear_employee_cache()
+    return employee_code
+
+
+def update_employee(employee_id, name, department):
+    initialize_database()
+    errors = validate_employee_fields(name, department)
+
+    if errors:
+        raise ValueError(" ".join(errors))
+
+    with connect_db() as conn:
+        result = conn.execute(
+            "UPDATE employees SET name = ?, department = ? WHERE id = ?",
+            (name.strip(), department.strip(), employee_id),
+        )
+
+        if result.rowcount == 0:
+            raise ValueError("Employee not found.")
+
+    clear_employee_cache()
+
+
+def delete_employee(employee_id):
+    initialize_database()
+
+    with connect_db() as conn:
+        employee_row = conn.execute(
+            "SELECT employee_code FROM employees WHERE id = ?",
+            (employee_id,),
+        ).fetchone()
+
+        if employee_row is None:
+            raise ValueError("Employee not found.")
+
+        employee_code = employee_row[0]
+        conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
+
+    from core.save_face import delete_employee_folder
+
+    if employee_code:
+        delete_employee_folder(employee_code)
+
     clear_employee_cache()
     return employee_code

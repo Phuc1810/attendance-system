@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -7,6 +7,8 @@ import numpy as np
 # Tao mapping giua label so va ma nhan vien
 DATASET_DIR = Path("data/faces")
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+CLAHE_CLIP_LIMIT = 2.0
+CLAHE_TILE_GRID_SIZE = (8, 8)
 
 
 def list_employee_folders(valid_employee_codes=None):
@@ -44,6 +46,27 @@ def list_image_files(folder_path):
     )
 
 
+def preprocess_face_image(image, image_size=(200, 200)):
+    """
+    Chuan hoa anh khuon mat truoc khi train/predict de giam khac biet giua camera.
+    """
+    if image is None:
+        return None
+
+    if len(image.shape) == 3:
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_image = image.copy()
+
+    gray_image = cv2.resize(gray_image, image_size)
+    gray_image = cv2.equalizeHist(gray_image)
+    clahe = cv2.createCLAHE(
+        clipLimit=CLAHE_CLIP_LIMIT,
+        tileGridSize=CLAHE_TILE_GRID_SIZE,
+    )
+    return clahe.apply(gray_image)
+
+
 def load_training_data(image_size=(200, 200), valid_employee_codes=None):
     """
     Doc toan bo dataset khuon mat de train model.
@@ -75,9 +98,8 @@ def load_training_data(image_size=(200, 200), valid_employee_codes=None):
                 print(f"Cannot read image: {image_file}")
                 continue
 
-            image = cv2.resize(image, image_size)
-
-            images.append(image)
+            processed_image = preprocess_face_image(image, image_size)
+            images.append(processed_image)
             labels.append(label_index)
 
     return images, np.array(labels), label_to_code, code_to_label
