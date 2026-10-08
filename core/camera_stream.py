@@ -44,6 +44,96 @@ def get_or_create_camera(session_state: dict, prefix: str, camera_index: int) ->
     return cap
 
 
+PREDICTION_INTERVAL = 2
+PREDICTION_POSITION_TOLERANCE = 18
+PREDICTION_SIZE_TOLERANCE = 18
+
+
+def clear_prediction_cache(session_state: dict, prefix: str) -> None:
+    session_state[f"{prefix}_prediction"] = None
+    session_state[f"{prefix}_prediction_face"] = None
+    session_state[f"{prefix}_prediction_counter"] = 0
+
+
+def _normalize_face_box(face_box: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    return tuple(int(value) for value in face_box)
+
+
+def _face_box_changed(previous_face_box: Optional[Tuple[int, int, int, int]], current_face_box: Tuple[int, int, int, int]) -> bool:
+    if previous_face_box is None:
+        return True
+
+    previous_x, previous_y, previous_w, previous_h = previous_face_box
+    current_x, current_y, current_w, current_h = current_face_box
+
+    return (
+        abs(previous_x - current_x) > PREDICTION_POSITION_TOLERANCE
+        or abs(previous_y - current_y) > PREDICTION_POSITION_TOLERANCE
+        or abs(previous_w - current_w) > PREDICTION_SIZE_TOLERANCE
+        or abs(previous_h - current_h) > PREDICTION_SIZE_TOLERANCE
+    )
+
+
+def get_or_update_prediction(
+    session_state: dict,
+    prefix: str,
+    frame: Any,
+    faces_list: List[Tuple[int, int, int, int]],
+    crop_face_fn,
+    predict_face_fn,
+    camera_index: Optional[int] = None,
+    padding_ratio: float = 0.0,
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """
+    Tối ưu hóa nhận diện khuôn mặt: Chỉ chạy predict_face khi cần thiết hoặc khi khuôn mặt cử động.
+    Trả về: (prediction_result, is_new_prediction)
+    """
+    if len(faces_list) != 1:
+        clear_prediction_cache(session_state, prefix)
+        return None, False
+
+    prediction_key = f"{prefix}_prediction"
+    prediction_face_key = f"{prefix}_prediction_face"
+    prediction_counter_key = f"{prefix}_prediction_counter"
+
+    current_face_box = _normalize_face_box(faces_list[0])
+    previous_face_box = session_state.get(prediction_face_key)
+    cached_prediction = session_state.get(prediction_key)
+
+    prediction_counter = session_state.get(prediction_counter_key, 0) + 1
+    session_state[prediction_counter_key] = prediction_counter
+
+    should_refresh_prediction = (
+        cached_prediction is None
+        or prediction_counter == 1
+        or prediction_counter % PREDICTION_INTERVAL == 0
+        or _face_box_changed(previous_face_box, current_face_box)
+    )
+
+    if should_refresh_prediction:
+        face_crop = crop_face_fn(
+            frame,
+            current_face_box,
+            padding_ratio=padding_ratio,
+        )
+
+        prediction_kwargs = {}
+        if camera_index is not None:
+            prediction_kwargs["camera_index"] = camera_index
+
+        try:
+            prediction = predict_face_fn(face_crop, **prediction_kwargs)
+        except Exception:
+            clear_prediction_cache(session_state, prefix)
+            raise
+
+        session_state[prediction_key] = prediction
+        session_state[prediction_face_key] = current_face_box
+        return prediction, True
+
+    return cached_prediction, False
+
+
 def read_camera_frame(cap: cv2.VideoCapture) -> Tuple[bool, Optional[Any]]:
     """
     Đọc 1 khung hình từ thiết bị camera đã mở.
