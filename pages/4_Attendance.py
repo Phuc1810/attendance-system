@@ -17,7 +17,7 @@ from db.database import initialize_database
 st_autorefresh(interval=1000, key="data_refresh")
 
 PAGE_KEY = "attendance"
-AUTO_MATCH_REQUIRED_FRAMES = 15
+AUTO_MATCH_REQUIRED_FRAMES = 4
 AUTO_ACTION_COOLDOWN_SECONDS = 30
 AUTO_RETRY_COOLDOWN_SECONDS = 15
 NOTICE_DURATION_SECONDS = 5

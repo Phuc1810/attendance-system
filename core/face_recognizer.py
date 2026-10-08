@@ -267,12 +267,9 @@ def predict_face(face_image, camera_index=None):
     else:
         rgb_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
 
-    # Detect face in the cropped image
-    face_locations = face_recognition.face_locations(rgb_image, model="hog")
-
-    if len(face_locations) == 0:
-        # Nếu không detect được face trong ảnh đã crop, thử dùng toàn bộ ảnh
-        face_locations = [(0, rgb_image.shape[1], rgb_image.shape[0], 0)]
+    # Vì ảnh face_image truyền vào đã được crop chính xác bởi Haar Cascade trước đó,
+    # ta bỏ qua bước quét HOG dư thừa (giúp tiết kiệm ~20-30ms mỗi frame) và dùng luôn toàn bộ khung ảnh crop.
+    face_locations = [(0, rgb_image.shape[1], rgb_image.shape[0], 0)]
 
     # Get encoding for the face
     face_encs = face_recognition.face_encodings(rgb_image, face_locations)

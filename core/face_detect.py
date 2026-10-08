@@ -1,44 +1,54 @@
 import cv2
-import face_recognition
+import os
 
-MAX_PROCESSING_WIDTH = 320
-MIN_FACE_SIZE = (50, 50)
-# Chuyển sang sử dụng face_recognition (dlib HOG) thay cho Haar Cascade
-# HOG nhanh trên CPU, chính xác hơn Haar Cascade nhiều lần
-# Tự động tính toán scale để đảm bảo tốc độ không bị treo khi luồng video có độ phân giải cao
+MAX_PROCESSING_WIDTH = 640
+MIN_FACE_SIZE = (60, 60)
+
+# Initialize Haar Cascade classifier
+cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
+face_cascade = cv2.CascadeClassifier(cascade_path)
 
 def detect_faces(frame):
     """
-    Detect faces using face_recognition library (dlib HOG model).
-    Returns face locations in (x, y, w, h) format for backward compatibility
-    with the existing UI code, plus a grayscale image.
+    Detect faces using OpenCV Haar Cascade.
+    Haar Cascade is significantly faster on CPU than dlib HOG, preventing WebRTC frame drops and freezing.
+    It is also much more robust to large/close-up faces where HOG often fails.
+    Returns face locations in (x, y, w, h) format.
     """
     height, width = frame.shape[:2]
     
     # Calculate dynamic scale to ensure the processing width is at most MAX_PROCESSING_WIDTH
     scale = MAX_PROCESSING_WIDTH / width if width > MAX_PROCESSING_WIDTH else 1.0
     
-    resized_width = max(1, int(width * scale))
-    resized_height = max(1, int(height * scale))
+    if scale != 1.0:
+        resized_width = max(1, int(width * scale))
+        resized_height = max(1, int(height * scale))
+        process_frame = cv2.resize(frame, (resized_width, resized_height))
+    else:
+        process_frame = frame
 
-    # face_recognition expects RGB
-    small_frame = cv2.resize(frame, (resized_width, resized_height))
-    rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+    gray = cv2.cvtColor(process_frame, cv2.COLOR_BGR2GRAY)
+    
+    # Detect faces
+    faces = face_cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=MIN_FACE_SIZE
+    )
 
-    # face_locations returns list of (top, right, bottom, left) tuples
-    face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
-
-    # Convert to (x, y, w, h) format and scale back to original size
     scaled_faces = []
-    for (top, right, bottom, left) in face_locations:
-        x = int(left / scale)
-        y = int(top / scale)
-        w = int((right - left) / scale)
-        h = int((bottom - top) / scale)
+    for (x, y, w, h) in faces:
+        if scale != 1.0:
+            orig_x = int(x / scale)
+            orig_y = int(y / scale)
+            orig_w = int(w / scale)
+            orig_h = int(h / scale)
+        else:
+            orig_x, orig_y, orig_w, orig_h = x, y, w, h
+            
+        scaled_faces.append((orig_x, orig_y, orig_w, orig_h))
 
-        # Filter out faces smaller than minimum size
-        if w >= MIN_FACE_SIZE[0] and h >= MIN_FACE_SIZE[1]:
-            scaled_faces.append((x, y, w, h))
-
-    gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-    return scaled_faces, gray
+    # Return full resolution gray image for backward compatibility if needed by other modules
+    full_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return scaled_faces, full_gray
