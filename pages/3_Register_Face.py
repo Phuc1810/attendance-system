@@ -1,21 +1,36 @@
-import streamlit as st
 from pathlib import Path
 import cv2
 import numpy as np
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-from streamlit_autorefresh import st_autorefresh
-from core.camera_stream import DetectionProcessor
+import streamlit as st
+
+from core.camera_stream import (
+    get_or_create_camera,
+    release_camera,
+    release_inactive_cameras,
+    update_detected_faces,
+    annotate_faces,
+)
 from core.face_detect import detect_faces
 from core.save_face import crop_and_resize_face, save_face_image
 from db.database import get_all_employees, initialize_database
 
-st_autorefresh(interval=1000, key="data_refresh")
-
 PAGE_KEY = "register_face"
+CAMERA_INTERVAL_SECONDS = 0.1
 FACE_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "faces"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 initialize_database()
+
+if f"{PAGE_KEY}_run_camera" not in st.session_state:
+    st.session_state[f"{PAGE_KEY}_run_camera"] = False
+
+release_inactive_cameras(st.session_state, PAGE_KEY)
+
+camera_run_every = (
+    CAMERA_INTERVAL_SECONDS
+    if st.session_state.get(f"{PAGE_KEY}_run_camera", False)
+    else None
+)
 
 def count_employee_images(employee_code):
     employee_folder = FACE_DATA_DIR / employee_code
@@ -26,7 +41,7 @@ def count_employee_images(employee_code):
         if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTENSIONS
     )
 
-st.title("🧑‍💻 Register Face")
+st.title("🧑‍💻 Register Face (Native)")
 st.markdown("Collect face images for each employee to train the recognition model.")
 
 employees = get_all_employees()
@@ -72,68 +87,86 @@ with summary_col:
 
 st.divider()
 
-tab_camera, tab_upload = st.tabs(["📷 Camera Capture", "📁 Upload Images"])
+tab_camera, tab_upload = st.tabs(["📷 Camera Capture (Native)", "📁 Upload Images"])
 
+# --- TAB CAMERA CAPTURE (NATIVE) ---
 with tab_camera:
-    cam_col, info_col = st.columns([1.5, 1], gap="large")
-    with cam_col:
-        st.markdown("### Live Preview")
-        st.markdown(
-            """
-            <style>
-            .stVideo { border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-            </style>
-            """, 
-            unsafe_allow_html=True
-        )
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 1.2])
+    with ctrl_col1:
+        cam_idx = st.selectbox("Choose Camera", [0, 1], key=f"{PAGE_KEY}_camera_index")
+    with ctrl_col2:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        run_camera = st.toggle("🎥 Bật Camera Preview", key=f"{PAGE_KEY}_run_camera")
 
-        RTC_CONFIGURATION = RTCConfiguration(
-            {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-        )
+    previous_camera_index = st.session_state.get(f"{PAGE_KEY}_active_camera_index")
+    if previous_camera_index != cam_idx:
+        st.session_state[f"{PAGE_KEY}_active_camera_index"] = cam_idx
+        release_camera(st.session_state, PAGE_KEY)
 
-        ctx = webrtc_streamer(
-            key="register_face",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=DetectionProcessor,
-            media_stream_constraints={
-                "video": {
-                    "width": {"ideal": 640},
-                    "height": {"ideal": 480}
-                },
-                "audio": False
-            },
-            async_processing=True,
-        )
+    @st.fragment(run_every=camera_run_every)
+    def render_register_camera():
+        run_cam = st.session_state.get(f"{PAGE_KEY}_run_camera", False)
+        cam_index = st.session_state.get(f"{PAGE_KEY}_camera_index", 0)
 
-    with info_col:
-        st.markdown("### Capture Controls")
-        st.caption("Step 1. Start the camera and look straight.")
-        st.caption("Step 2. Keep exactly one face in the frame.")
-        st.caption("Step 3. Click Capture.")
-        
-        st.selectbox("Camera Source", [0, 1], key=f"{PAGE_KEY}_camera_index", disabled=True, help="Browser manages camera source.")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        capture_button = st.button("📸 Capture Face", type="primary", use_container_width=True)
+        cam_col, info_col = st.columns([1.5, 1], gap="large")
 
-        if capture_button:
-            if not (ctx and ctx.state.playing and ctx.video_processor and ctx.video_processor.frame_bgr is not None):
-                st.toast("⚠️ Camera is not running or no frame available.")
-            else:
-                latest_frame = ctx.video_processor.frame_bgr
-                latest_faces, _ = detect_faces(latest_frame)
-                if len(latest_faces) == 0:
-                    st.toast("⚠️ No face detected. Cannot save.")
-                elif len(latest_faces) > 1:
-                    st.toast("⚠️ Multiple faces detected. Keep exactly one face in frame.")
+        with cam_col:
+            with st.container(border=True):
+                st.subheader("Live Preview (Native)")
+
+                if not run_cam:
+                    release_camera(st.session_state, PAGE_KEY)
+                    st.info("Camera đang tắt. Bật 'Bật Camera Preview' để căn chỉnh khuôn mặt.")
                 else:
-                    x, y, w, h = latest_faces[0]
-                    face_crop = crop_and_resize_face(latest_frame, (x, y, w, h))
-                    save_path = save_face_image(selected_employee_code, face_crop)
-                    st.toast(f"✅ Saved face image!")
+                    cap = get_or_create_camera(st.session_state, PAGE_KEY, cam_index)
+                    if cap is None or not cap.isOpened():
+                        release_camera(st.session_state, PAGE_KEY)
+                        st.error("Không thể mở thiết bị Camera.")
+                    else:
+                        ret, frame = cap.read()
+                        if not ret or frame is None:
+                            release_camera(st.session_state, PAGE_KEY)
+                            st.error("Không thể đọc khung hình từ camera.")
+                        else:
+                            # Lưu frame gốc sạch vào session_state để dùng khi bấm nút Chụp
+                            st.session_state[f"{PAGE_KEY}_latest_clean_frame"] = frame.copy()
 
+                            faces = update_detected_faces(st.session_state, PAGE_KEY, frame, detect_faces)
+                            annotated = annotate_faces(frame, faces)
 
+                            frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                            st.image(frame_rgb, channels="RGB", use_container_width=True)
+
+        with info_col:
+            with st.container(border=True):
+                st.subheader("Capture Controls")
+                st.caption("1. Bật camera và nhìn thẳng vào ống kính.")
+                st.caption("2. Đảm bảo chỉ có 1 khuôn mặt trong khung hình.")
+                st.caption("3. Bấm nút Chụp để lưu mẫu nhận diện.")
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                capture_pressed = st.button("📸 Chụp & Lưu khuôn mặt", type="primary", use_container_width=True)
+
+                if capture_pressed:
+                    clean_frame = st.session_state.get(f"{PAGE_KEY}_latest_clean_frame")
+                    if not run_cam or clean_frame is None:
+                        st.toast("⚠️ Vui lòng bật camera preview trước khi chụp!")
+                    else:
+                        detected_faces, _ = detect_faces(clean_frame)
+                        if len(detected_faces) == 0:
+                            st.toast("⚠️ Không tìm thấy khuôn mặt trong ảnh! Vui lòng thử lại.")
+                        elif len(detected_faces) > 1:
+                            st.toast("⚠️ Phát hiện nhiều khuôn mặt! Hãy đảm bảo chỉ có 1 người trong khung hình.")
+                        else:
+                            x, y, w, h = detected_faces[0]
+                            face_crop = crop_and_resize_face(clean_frame, (x, y, w, h))
+                            save_path = save_face_image(selected_employee_code, face_crop)
+                            st.toast(f"✅ Đã lưu ảnh khuôn mặt cho nhân viên {selected_employee_code}!")
+                            st.rerun()
+
+    render_register_camera()
+
+# --- TAB UPLOAD IMAGES ---
 with tab_upload:
     with st.container(border=True):
         st.subheader("Upload Existing Photos")
@@ -158,13 +191,14 @@ with tab_upload:
                 if len(faces) > 1:
                     stats["multiple_faces"] += 1
                     continue
-                
+
                 x, y, w, h = faces[0]
                 face_crop = crop_and_resize_face(image, (x, y, w, h))
                 save_face_image(selected_employee_code, face_crop)
                 stats["saved"] += 1
-                
+
             if stats["saved"]:
                 st.toast(f"✅ Successfully saved {stats['saved']} image(s).")
             if stats["no_face"] or stats["multiple_faces"] or stats["invalid"]:
                 st.toast(f"⚠️ Skipped {stats['no_face'] + stats['multiple_faces'] + stats['invalid']} invalid image(s).")
+            st.rerun()

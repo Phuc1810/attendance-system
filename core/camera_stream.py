@@ -261,23 +261,3 @@ def annotate_recognition(
         2,
     )
     return annotated
-
-
-# --- STUB CHO CÁC CLASS CŨ ĐỂ ĐẢM BẢO TƯƠNG THÍCH TRƯỚC KHI REFACTOR PHASE 2/3 ---
-try:
-    from streamlit_webrtc import VideoProcessorBase
-    import av
-
-    class DetectionProcessor(VideoProcessorBase):
-        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-            return frame
-
-    class RecognitionProcessor(VideoProcessorBase):
-        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-            return frame
-
-    class AttendanceProcessor(VideoProcessorBase):
-        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-            return frame
-except ImportError:
-    pass
