@@ -1,185 +1,198 @@
-﻿import cv2
+import cv2
+import av
+from streamlit_webrtc import VideoProcessorBase
 
-DETECTION_INTERVAL = 3
-PREDICTION_INTERVAL = 2
-CAMERA_FRAME_WIDTH = 640
-CAMERA_FRAME_HEIGHT = 480
-PREDICTION_POSITION_TOLERANCE = 18
-PREDICTION_SIZE_TOLERANCE = 18
-CAMERA_PAGE_KEYS = ("register_face", "attendance", "face_detection", "face_recognition")
+from core.face_detect import detect_faces
+from core.face_recognizer import predict_face
+from core.save_face import crop_and_resize_face
 
-
-# Quan ly viec bat, tat camera va toi uu hoa ve hinh tren Streamlit
-# Dam bao tai cung 1 thoi diem chi co 1 cam co the hoat dong
-
-def get_or_create_camera(session_state, prefix, camera_index):
-    cap_key = f"{prefix}_cap"
-    index_key = f"{prefix}_camera_index_value"
-    cap = session_state.get(cap_key)
-    current_index = session_state.get(index_key)
-
-    if cap is None or current_index != camera_index or not cap.isOpened():
-        if cap is not None:
-            cap.release()
-        cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
-        session_state[cap_key] = cap
-        session_state[index_key] = camera_index
-
-    return cap
-
-
-# Giai phong tai nguyen tranh giu session webcam
-
-def clear_prediction_cache(session_state, prefix):
-    session_state[f"{prefix}_prediction"] = None
-    session_state[f"{prefix}_prediction_face"] = None
-    session_state[f"{prefix}_prediction_counter"] = 0
-
-
-def release_camera(session_state, prefix):
-    cap_key = f"{prefix}_cap"
-    cap = session_state.get(cap_key)
-    if cap is not None:
-        cap.release()
-    session_state[cap_key] = None
-    session_state[f"{prefix}_frame"] = None
-    session_state[f"{prefix}_faces"] = []
-    session_state[f"{prefix}_frame_counter"] = 0
-    clear_prediction_cache(session_state, prefix)
-
-
-# Ham nay co muc dich la luu frame moi nhat, nho ket qua detect truoc do
-# va chi thuc hien face_detect theo chu ky
-
-def update_detected_faces(session_state, prefix, frame, detect_faces_fn):
-    frame_key = f"{prefix}_frame"
-    faces_key = f"{prefix}_faces"
-    frame_counter_key = f"{prefix}_frame_counter"
-
-    frame_counter = session_state.get(frame_counter_key, 0) + 1
-    session_state[frame_counter_key] = frame_counter
-    session_state[frame_key] = frame.copy()
-
-    previous_faces = session_state.get(faces_key, [])
-    should_detect = (
-        frame_counter == 1
-        or frame_counter % DETECTION_INTERVAL == 0
-        or not previous_faces
-    )
-
-    if should_detect:
-        detected_faces, _ = detect_faces_fn(frame)
-        faces_list = [tuple(int(value) for value in face) for face in detected_faces]
-        session_state[faces_key] = faces_list
-        return faces_list
-
-    return previous_faces
-
-
-def _normalize_face_box(face_box):
-    return tuple(int(value) for value in face_box)
-
-
-def _face_box_changed(previous_face_box, current_face_box):
-    if previous_face_box is None:
-        return True
-
-    previous_x, previous_y, previous_w, previous_h = previous_face_box
-    current_x, current_y, current_w, current_h = current_face_box
-
-    return (
-        abs(previous_x - current_x) > PREDICTION_POSITION_TOLERANCE
-        or abs(previous_y - current_y) > PREDICTION_POSITION_TOLERANCE
-        or abs(previous_w - current_w) > PREDICTION_SIZE_TOLERANCE
-        or abs(previous_h - current_h) > PREDICTION_SIZE_TOLERANCE
-    )
-
-
-def get_or_update_prediction(
-    session_state,
-    prefix,
-    frame,
-    faces_list,
-    crop_face_fn,
-    predict_face_fn,
-    camera_index=None,
-    padding_ratio=0.0,
-):
-    if len(faces_list) != 1:
-        clear_prediction_cache(session_state, prefix)
-        return None, False
-
-    prediction_key = f"{prefix}_prediction"
-    prediction_face_key = f"{prefix}_prediction_face"
-    prediction_counter_key = f"{prefix}_prediction_counter"
-
-    current_face_box = _normalize_face_box(faces_list[0])
-    previous_face_box = session_state.get(prediction_face_key)
-    cached_prediction = session_state.get(prediction_key)
-
-    prediction_counter = session_state.get(prediction_counter_key, 0) + 1
-    session_state[prediction_counter_key] = prediction_counter
-
-    should_refresh_prediction = (
-        cached_prediction is None
-        or prediction_counter == 1
-        or prediction_counter % PREDICTION_INTERVAL == 0
-        or _face_box_changed(previous_face_box, current_face_box)
-    )
-
-    if should_refresh_prediction:
-        face_crop = crop_face_fn(
-            frame,
-            current_face_box,
-            padding_ratio=padding_ratio,
+class DetectionProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.faces_list = []
+        self.frame_bgr = None
+        
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        self.frame_bgr = img.copy()
+        
+        faces_list, _ = detect_faces(img)
+        self.faces_list = faces_list
+        
+        for (x, y, w, h) in faces_list:
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            
+        cv2.putText(
+            img,
+            f"Faces detected: {len(faces_list)}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 255, 0),
+            2,
         )
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        prediction_kwargs = {}
-        if camera_index is not None:
-            prediction_kwargs["camera_index"] = camera_index
+class RecognitionProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.faces_list = []
+        self.frame_bgr = None
+        self.prediction = None
+        self.model_error = False
+        self.camera_index = 0
+        self.padding_ratio = 0.0
 
-        try:
-            prediction = predict_face_fn(face_crop, **prediction_kwargs)
-        except Exception:
-            clear_prediction_cache(session_state, prefix)
-            raise
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        self.frame_bgr = img.copy()
+        
+        faces_list, _ = detect_faces(img)
+        self.faces_list = faces_list
+        
+        annotated_frame = img.copy()
+        self.prediction = None
+        self.model_error = False
+        
+        if len(faces_list) == 1:
+            try:
+                face_crop = crop_and_resize_face(
+                    img,
+                    faces_list[0],
+                    padding_ratio=self.padding_ratio,
+                )
+                self.prediction = predict_face(face_crop, camera_index=self.camera_index)
+            except Exception as e:
+                print(f"Prediction error: {e}")
+                self.model_error = True
+                
+        for (x, y, w, h) in faces_list:
+            if len(faces_list) == 1 and self.prediction is not None:
+                if self.prediction["is_match"]:
+                    label_text = f"{self.prediction['display_code']} ({self.prediction['confidence']:.2f})"
+                    box_color = (0, 255, 0)
+                else:
+                    label_text = f"Unknown ({self.prediction['confidence']:.2f} > {self.prediction['match_threshold']:.2f})"
+                    box_color = (0, 0, 255)
+            elif self.model_error:
+                label_text = "Model error"
+                box_color = (0, 0, 255)
+            else:
+                label_text = "Face detected"
+                box_color = (0, 215, 255)
+                
+            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), box_color, 2)
+            cv2.putText(
+                annotated_frame,
+                label_text,
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                box_color,
+                2,
+            )
 
-        session_state[prediction_key] = prediction
-        session_state[prediction_face_key] = current_face_box
-        return prediction, True
+        cv2.putText(
+            annotated_frame,
+            f"Faces detected: {len(faces_list)}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 255, 0),
+            2,
+        )
+        return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
 
-    return cached_prediction, False
+class AttendanceProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.faces_list = []
+        self.frame_bgr = None
+        self.prediction = None
+        self.model_error = False
+        self.camera_index = 0
+        self.padding_ratio = 0.0
+        
+        self.stable_employee_code = None
+        self.stable_frame_count = 0
+        
+        self.recognized_employee_code = None
+        self.recognized_confidence = None
+        self.recognized_threshold = None
 
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        self.frame_bgr = img.copy()
+        
+        faces_list, _ = detect_faces(img)
+        self.faces_list = faces_list
+        
+        annotated_frame = img.copy()
+        self.prediction = None
+        self.model_error = False
+        
+        if len(faces_list) == 1:
+            try:
+                face_crop = crop_and_resize_face(
+                    img,
+                    faces_list[0],
+                    padding_ratio=self.padding_ratio,
+                )
+                self.prediction = predict_face(face_crop, camera_index=self.camera_index)
+            except Exception as e:
+                print(f"Prediction error: {e}")
+                self.model_error = True
+                
+        if len(faces_list) == 1 and self.prediction is not None and self.prediction["is_match"]:
+            code = self.prediction["display_code"]
+            self.recognized_employee_code = code
+            self.recognized_confidence = self.prediction["confidence"]
+            self.recognized_threshold = self.prediction["match_threshold"]
+            
+            if self.stable_employee_code == code:
+                self.stable_frame_count += 1
+            else:
+                self.stable_employee_code = code
+                self.stable_frame_count = 1
+        else:
+            self.recognized_employee_code = None
+            self.recognized_confidence = None
+            self.recognized_threshold = None
+            self.stable_employee_code = None
+            self.stable_frame_count = 0
+                
+        for (x, y, w, h) in faces_list:
+            if len(faces_list) == 1 and self.prediction is not None:
+                if self.prediction["is_match"]:
+                    label_text = f"{self.prediction['display_code']} ({self.prediction['confidence']:.2f})"
+                    box_color = (0, 255, 0)
+                else:
+                    label_text = f"Unknown ({self.prediction['confidence']:.2f} > {self.prediction['match_threshold']:.2f})"
+                    box_color = (0, 0, 255)
+            elif self.model_error:
+                label_text = "Model error"
+                box_color = (0, 0, 255)
+            else:
+                label_text = "Face detected"
+                box_color = (0, 215, 255)
+                
+            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), box_color, 2)
+            cv2.putText(
+                annotated_frame,
+                label_text,
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                box_color,
+                2,
+            )
 
-def release_inactive_cameras(session_state, active_prefix=None):
-    for prefix in CAMERA_PAGE_KEYS:
-        if active_prefix is not None and prefix == active_prefix:
-            continue
-
-        release_camera(session_state, prefix)
-        run_key = f"{prefix}_run_camera"
-        if run_key in session_state:
-            session_state[run_key] = False
-
-
-# Ve khung va hien thi thong tin
-
-def annotate_faces(frame, faces):
-    annotated = frame.copy()
-
-    for (x, y, w, h) in faces:
-        cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-    cv2.putText(
-        annotated,
-        f"Faces detected: {len(faces)}",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 255, 0),
-        2,
-    )
-
-    return annotated
+        cv2.putText(
+            annotated_frame,
+            f"Faces detected: {len(faces_list)}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 255, 0),
+            2,
+        )
+        return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
+def release_inactive_cameras(*args, **kwargs):
+    pass

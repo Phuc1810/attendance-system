@@ -1,47 +1,40 @@
-﻿import cv2
+import cv2
+import face_recognition
 
 DETECTION_SCALE = 0.5
 MIN_FACE_SIZE = (50, 50)
-
-#Mục tiêu: nhận diện bằng OpenCV để tìm vị trí mặt
-# Load model Haar Cascade co san trong OpenCV
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+# Chuyển sang sử dụng face_recognition (dlib HOG) thay cho Haar Cascade
+# HOG nhanh trên CPU, chính xác hơn Haar Cascade nhiều lần
 
 
 def detect_faces(frame):
     """
-    Detect faces on a smaller frame to reduce CPU usage, then scale
-    coordinates back to the original frame size.
+    Detect faces using face_recognition library (dlib HOG model).
+    Returns face locations in (x, y, w, h) format for backward compatibility
+    with the existing UI code, plus a grayscale image.
     """
     height, width = frame.shape[:2]
     resized_width = max(1, int(width * DETECTION_SCALE))
     resized_height = max(1, int(height * DETECTION_SCALE))
 
-    resized_frame = cv2.resize(frame, (resized_width, resized_height))
-    gray = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
+    # face_recognition expects RGB
+    small_frame = cv2.resize(frame, (resized_width, resized_height))
+    rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
-    scaled_min_face = (
-        max(20, int(MIN_FACE_SIZE[0] * DETECTION_SCALE)),
-        max(20, int(MIN_FACE_SIZE[1] * DETECTION_SCALE)),
-    )
+    # face_locations returns list of (top, right, bottom, left) tuples
+    face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
 
-    faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=scaled_min_face,
-    )
+    # Convert to (x, y, w, h) format and scale back to original size
+    scaled_faces = []
+    for (top, right, bottom, left) in face_locations:
+        x = int(left / DETECTION_SCALE)
+        y = int(top / DETECTION_SCALE)
+        w = int((right - left) / DETECTION_SCALE)
+        h = int((bottom - top) / DETECTION_SCALE)
 
-    scaled_faces = [
-        (
-            int(x / DETECTION_SCALE),
-            int(y / DETECTION_SCALE),
-            int(w / DETECTION_SCALE),
-            int(h / DETECTION_SCALE),
-        )
-        for (x, y, w, h) in faces
-    ]
+        # Filter out faces smaller than minimum size
+        if w >= MIN_FACE_SIZE[0] and h >= MIN_FACE_SIZE[1]:
+            scaled_faces.append((x, y, w, h))
 
+    gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
     return scaled_faces, gray

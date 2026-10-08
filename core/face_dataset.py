@@ -2,13 +2,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import face_recognition
 
-# Doc toan bo anh trong data/faces, chuyen du lieu anh thanh dang model de train
-# Tao mapping giua label so va ma nhan vien
+# Doc toan bo anh trong data/faces, chuyen du lieu anh thanh face encodings
+# Tao mapping giua employee_code va list cac face encoding vectors (128D)
 DATASET_DIR = Path("data/faces")
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-CLAHE_CLIP_LIMIT = 2.0
-CLAHE_TILE_GRID_SIZE = (8, 8)
 
 
 def list_employee_folders(valid_employee_codes=None):
@@ -48,36 +47,28 @@ def list_image_files(folder_path):
 
 def preprocess_face_image(image, image_size=(200, 200)):
     """
-    Chuan hoa anh khuon mat truoc khi train/predict de giam khac biet giua camera.
+    Chuan hoa anh khuon mat: resize ve kich thuoc chuan.
+    Voi face_recognition, khong can chuyen grayscale hay CLAHE nua
+    vi model dlib lam viec truc tiep tren anh mau RGB.
     """
     if image is None:
         return None
 
-    if len(image.shape) == 3:
-        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_image = image.copy()
-
-    gray_image = cv2.resize(gray_image, image_size)
-    gray_image = cv2.equalizeHist(gray_image)
-    clahe = cv2.createCLAHE(
-        clipLimit=CLAHE_CLIP_LIMIT,
-        tileGridSize=CLAHE_TILE_GRID_SIZE,
-    )
-    return clahe.apply(gray_image)
+    resized = cv2.resize(image, image_size)
+    return resized
 
 
 def load_training_data(image_size=(200, 200), valid_employee_codes=None):
     """
-    Doc toan bo dataset khuon mat de train model.
+    Doc toan bo dataset khuon mat va trich xuat face encodings (128D vectors).
 
     Tra ve:
-    - images: list anh grayscale
+    - encodings: list cac 128-dimensional numpy arrays
     - labels: list nhan so tuong ung
     - label_to_code: dict anh xa so -> ma nhan vien
     - code_to_label: dict anh xa ma nhan vien -> so
     """
-    images = []
+    encodings = []
     labels = []
     label_to_code = {}
     code_to_label = {}
@@ -92,17 +83,31 @@ def load_training_data(image_size=(200, 200), valid_employee_codes=None):
         image_files = list_image_files(employee_folder)
 
         for image_file in image_files:
-            image = cv2.imread(str(image_file), cv2.IMREAD_GRAYSCALE)
+            image = cv2.imread(str(image_file))
 
             if image is None:
                 print(f"Cannot read image: {image_file}")
                 continue
 
-            processed_image = preprocess_face_image(image, image_size)
-            images.append(processed_image)
-            labels.append(label_index)
+            # Convert BGR to RGB for face_recognition
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    return images, np.array(labels), label_to_code, code_to_label
+            # Detect face locations in the image
+            face_locations = face_recognition.face_locations(rgb_image, model="hog")
+
+            if len(face_locations) == 0:
+                # If no face detected, try the whole image as a face
+                # (because these are already cropped face images)
+                face_locations = [(0, rgb_image.shape[1], rgb_image.shape[0], 0)]
+
+            # Get encoding for the first (or only) face
+            face_encs = face_recognition.face_encodings(rgb_image, face_locations)
+
+            if len(face_encs) > 0:
+                encodings.append(face_encs[0])
+                labels.append(label_index)
+
+    return encodings, np.array(labels), label_to_code, code_to_label
 
 
 def count_images_per_employee(valid_employee_codes=None):
