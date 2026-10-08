@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 import math
-
 import cv2
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
@@ -15,7 +14,6 @@ from db.attendance_repo import (
 )
 from db.database import initialize_database
 
-# st.set_page_config(page_title="Attendance Dashboard", layout="wide")
 st_autorefresh(interval=1000, key="data_refresh")
 
 PAGE_KEY = "attendance"
@@ -26,16 +24,16 @@ NOTICE_DURATION_SECONDS = 5
 
 CAMERA_CONFIGS = {
     0: {
-        "title": "Laptop Camera - Check In",
-        "camera_source": "Laptop Camera",
+        "title": "Camera 1 (IN) 📥",
+        "camera_source": "Camera 1",
         "log_type": "IN",
-        "description": "Camera 0 is dedicated to automatic check-in.",
+        "description": "Camera 1 is dedicated to automatic check-in.",
     },
     1: {
-        "title": "Rappo C200 - Check Out",
-        "camera_source": "Rappo C200",
+        "title": "Camera 2 (OUT) 📤",
+        "camera_source": "Camera 2",
         "log_type": "OUT",
-        "description": "Camera 1 is dedicated to automatic check-out.",
+        "description": "Camera 2 is dedicated to automatic check-out.",
     },
 }
 
@@ -48,7 +46,8 @@ NOTICE_ICONS = {
 initialize_database()
 initialize_attendance_logs()
 
-st.title("Attendance")
+st.title("📷 Face Attendance Camera")
+st.markdown("Automatic Check-in/Check-out via face recognition. Select a camera mode and stand in front of the lens.")
 
 def get_camera_config(camera_index):
     return CAMERA_CONFIGS.get(camera_index, CAMERA_CONFIGS[0])
@@ -95,7 +94,7 @@ def render_attendance_notice():
     if not notice:
         return
     icon = NOTICE_ICONS.get(notice["level"], NOTICE_ICONS["info"])
-    st.toast(f"{notice['title']}: {notice['message']}", icon=icon)
+    st.toast(f"**{notice['title']}**: {notice['message']}", icon=icon)
     st.session_state.pop(f"{PAGE_KEY}_notice", None)
 
 def get_recent_attempt_key(employee_code, camera_config):
@@ -126,55 +125,65 @@ def get_log_cooldown_remaining(employee_code, camera_config):
     return max(0, math.ceil(remaining_seconds))
 
 
-control_col_1, control_col_3 = st.columns([1.2, 1.4], gap="large")
-with control_col_1:
+# Mode Selection
+col_mode, col_info = st.columns([1, 2], gap="large")
+with col_mode:
     selected_camera_index = st.selectbox(
-        "Choose camera",
+        "Mode Select",
         [0, 1],
         format_func=lambda index: get_camera_config(index)["title"],
         key=f"{PAGE_KEY}_camera_index",
     )
 
 selected_camera_config = get_camera_config(selected_camera_index)
+with col_info:
+    st.info(f"**Active Mode:** {selected_camera_config['title']} - {selected_camera_config['description']}")
 
-with control_col_3:
-    with st.container(border=True):
-        st.caption("Auto Attendance Flow")
-        st.markdown(f"**{selected_camera_config['title']}**")
-        st.write(selected_camera_config["description"])
-        st.caption(f"Requirement: {AUTO_MATCH_REQUIRED_FRAMES} stable frames before the system auto logs attendance.")
+st.divider()
 
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
 render_attendance_notice()
-preview_col, details_col = st.columns([1.8, 0.95], gap="large")
+
+preview_col, details_col = st.columns([1.5, 1], gap="large")
 
 with preview_col:
-    with st.container(border=True):
-        st.subheader("Live Camera")
-        st.caption("Keep exactly one face inside the frame. When recognition stays stable long enough, attendance is recorded automatically.")
-        
-        ctx = webrtc_streamer(
-            key="attendance",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=AttendanceProcessor,
-            media_stream_constraints={
-                "video": {
-                    "width": {"ideal": 640},
-                    "height": {"ideal": 480}
-                },
-                "audio": False
+    st.markdown("### Live Preview")
+    
+    # Styled container for WebRTC
+    st.markdown(
+        """
+        <style>
+        .stVideo { border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        </style>
+        """, 
+        unsafe_allow_html=True
+    )
+    
+    ctx = webrtc_streamer(
+        key="attendance",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_processor_factory=AttendanceProcessor,
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 640},
+                "height": {"ideal": 480}
             },
-            async_processing=True,
-        )
+            "audio": False
+        },
+        async_processing=True,
+    )
 
-        if ctx and ctx.video_processor:
-            ctx.video_processor.camera_index = selected_camera_index
+    if ctx and ctx.video_processor:
+        ctx.video_processor.camera_index = selected_camera_index
+
 
 with details_col:
+    st.markdown("### Recognition Status")
+    
     recognized_employee_code = None
     recognized_confidence = None
     recognized_threshold = None
@@ -202,9 +211,9 @@ with details_col:
                     set_attendance_notice(
                         "warning",
                         "Cooldown Active",
-                        f"A recent {action_text} for {recognized_employee_code} was just recorded. Please wait {cooldown_remaining} more second(s)."
+                        f"Just recorded {action_text}. Please wait {cooldown_remaining}s."
                     )
-                    ctx.video_processor.stable_frame_count = 0 # reset
+                    ctx.video_processor.stable_frame_count = 0 
                 else:
                     try:
                         new_log = create_attendance_from_camera(
@@ -214,61 +223,45 @@ with details_col:
                         )
                         set_attendance_notice(
                             "success",
-                            "Attendance Recorded",
-                            f"{new_log['employee_code']} {action_text} successful at {new_log['log_time']}."
+                            "Attendance Logged",
+                            f"{new_log['employee_code']} checked in successfully."
                         )
                     except ValueError as error:
-                        set_attendance_notice("warning", "Attendance Blocked", str(error))
+                        set_attendance_notice("warning", "Skipped", str(error))
                     finally:
-                        ctx.video_processor.stable_frame_count = 0 # reset
+                        ctx.video_processor.stable_frame_count = 0 
 
+    # Progress and Status UI
     with st.container(border=True):
-        st.subheader("Recognition Result")
-
-        if recognized_employee_code:
-            code_col, confidence_col = st.columns([1.1, 1])
-            with code_col:
-                st.caption("Employee Code")
-                st.markdown(f"### {recognized_employee_code}")
-            with confidence_col:
-                st.metric("Confidence", f"{recognized_confidence:.2f}")
-
-            threshold_text = "N/A" if recognized_threshold is None else f"{recognized_threshold:.2f}"
-            st.write(f"**Current threshold:** {threshold_text}")
-
-            latest_log = get_latest_attendance_log(
-                recognized_employee_code,
-                log_type=selected_camera_config["log_type"],
-            )
-            if latest_log:
-                st.caption(f"Latest {get_action_text(selected_camera_config)} event for this employee")
-                log_col_1, log_col_2 = st.columns(2)
-                log_col_1.write(f"**Type:** {latest_log['log_type']}")
-                log_col_2.write(f"**Camera:** {latest_log['camera_source']}")
-                st.write(f"**Time:** {latest_log['log_time']}")
-            else:
-                st.caption(f"No previous {get_action_text(selected_camera_config)} record found for this employee.")
-        else:
-            st.info("No valid recognition result yet. Keep one face centered in the frame.")
-
-    with st.container(border=True):
-        st.subheader("Auto Attendance Mode")
-        st.caption(selected_camera_config["description"])
-        st.write(f"**Current mode:** {selected_camera_config['title']}")
-
         if not (ctx and ctx.state.playing):
-            st.info("Turn on 'START' to start touchless attendance.")
+            st.info("🟢 Turn on 'START' to begin touchless attendance.")
         elif not recognized_employee_code:
-            st.info("Waiting for one valid face so the system can start stabilizing recognition.")
-            st.progress(0.0, text=f"Stable recognition progress: 0 / {AUTO_MATCH_REQUIRED_FRAMES} frames")
+            st.markdown(
+                """
+                <div style="text-align: center; padding: 20px;">
+                    <h3 style="color: #64748B;">Looking for face...</h3>
+                    <p style="color: #94A3B8;">Please step into the frame</p>
+                </div>
+                """, unsafe_allow_html=True
+            )
         else:
             progress_value = min(stable_count / AUTO_MATCH_REQUIRED_FRAMES, 1.0)
-            st.progress(progress_value, text=f"Stable recognition progress: {display_stable_count} / {AUTO_MATCH_REQUIRED_FRAMES} frames")
-
+            
             if cooldown_remaining > 0:
-                st.warning(f"Cooldown active for {recognized_employee_code}. Please wait {cooldown_remaining} second(s).")
+                st.warning(f"⏳ Cooldown active. Wait {cooldown_remaining}s.")
             elif stable_count < AUTO_MATCH_REQUIRED_FRAMES:
-                remaining_frames = AUTO_MATCH_REQUIRED_FRAMES - stable_count
-                st.info(f"Hold still for about {remaining_frames} stable frame(s) to trigger automatic attendance.")
+                st.markdown(f"**Target Locked: {recognized_employee_code}**")
+                st.progress(progress_value, text=f"Stabilizing... ({display_stable_count}/{AUTO_MATCH_REQUIRED_FRAMES})")
             else:
-                st.success("Stable recognition confirmed. Recording attendance automatically...")
+                st.success("✅ Stable recognition! Logging attendance...")
+
+    # Latest Log Info
+    if recognized_employee_code:
+        st.markdown(
+            f"""
+            <div style="background-color: #FFFFFF; padding: 15px; border-radius: 8px; border: 1px solid #10B981; margin-top: 15px;">
+                <h4 style="margin:0; color: #10B981;">{recognized_employee_code}</h4>
+                <p style="margin: 5px 0 0 0;">Confidence: {recognized_confidence:.2f}</p>
+            </div>
+            """, unsafe_allow_html=True
+        )

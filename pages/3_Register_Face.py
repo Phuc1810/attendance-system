@@ -9,7 +9,6 @@ from core.face_detect import detect_faces
 from core.save_face import crop_and_resize_face, save_face_image
 from db.database import get_all_employees, initialize_database
 
-# st.set_page_config(page_title="Attendance Dashboard", layout="wide")
 st_autorefresh(interval=1000, key="data_refresh")
 
 PAGE_KEY = "register_face"
@@ -27,13 +26,13 @@ def count_employee_images(employee_code):
         if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTENSIONS
     )
 
-st.title("Register Face")
-st.caption("Collect clean face images for each employee before training the recognition model.")
+st.title("🧑‍💻 Register Face")
+st.markdown("Collect face images for each employee to train the recognition model.")
 
 employees = get_all_employees()
 
 if not employees:
-    st.warning("No employees found. Please add employees first.")
+    st.warning("⚠️ No employees found. Please add employees first in the Management tab.")
     st.stop()
 
 employee_map = {
@@ -45,11 +44,11 @@ employee_map = {
     for _, employee_code, name, department in employees
 }
 
-selector_col, summary_col = st.columns([1.2, 1], gap="large")
+selector_col, summary_col = st.columns([1, 1], gap="large")
 
 with selector_col:
     selected_employee_code = st.selectbox(
-        "Choose employee",
+        "Select Employee",
         list(employee_map.keys()),
         format_func=lambda code: f"{code} - {employee_map[code]['name']} ({employee_map[code]['department']})",
     )
@@ -58,77 +57,35 @@ selected_employee = employee_map[selected_employee_code]
 saved_image_count = count_employee_images(selected_employee_code)
 
 with summary_col:
-    with st.container(border=True):
-        st.subheader("Selected Employee")
-        summary_col_1, summary_col_2 = st.columns(2)
-        summary_col_3, summary_col_4 = st.columns(2)
-        with summary_col_1:
-            st.caption("Employee Code")
-            st.write(selected_employee["employee_code"])
-        with summary_col_2:
-            st.caption("Name")
-            st.write(selected_employee["name"])
-        with summary_col_3:
-            st.caption("Department")
-            st.write(selected_employee["department"])
-        with summary_col_4:
-            st.metric("Saved Images", saved_image_count)
+    st.markdown(
+        f"""
+        <div style="background-color: #FFFFFF; padding: 15px; border-radius: 8px; border: 1px solid #E2E8F0; box-shadow: 0 1px 3px rgba(0,0,0,0.1)">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin:0; color: #1E3A8A;">{selected_employee['employee_code']}</h3>
+                <span style="background-color: #F1F5F9; color: #475569; padding: 4px 10px; border-radius: 20px; font-weight: 500; font-size: 14px;">{saved_image_count} images</span>
+            </div>
+            <h5 style="margin:5px 0 0 0; color: #64748B;">{selected_employee['name']}</h5>
+            <p style="margin: 5px 0 0 0; color: #94A3B8;">{selected_employee['department']}</p>
+        </div>
+        """, unsafe_allow_html=True
+    )
 
-tab_upload, tab_camera = st.tabs(["Upload Images", "Camera Capture"])
+st.divider()
 
-with tab_upload:
-    with st.container(border=True):
-        st.subheader("Upload Face Images")
-        st.caption("Use one face per image and include multiple head angles for better recognition quality.")
-        uploaded_files = st.file_uploader(
-            "Upload one or more images",
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True,
-        )
-        if uploaded_files and st.button("Process Uploaded Images", type="primary", use_container_width=True):
-            stats = {"saved": 0, "no_face": 0, "multiple_faces": 0, "invalid": 0}
-            processing_details = []
-            for uploaded_file in uploaded_files:
-                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                if image is None:
-                    stats["invalid"] += 1
-                    processing_details.append(f"Cannot read image: {uploaded_file.name}")
-                    continue
-                faces, _ = detect_faces(image)
-                if len(faces) == 0:
-                    stats["no_face"] += 1
-                    processing_details.append(f"No face detected in file: {uploaded_file.name}")
-                    continue
-                if len(faces) > 1:
-                    stats["multiple_faces"] += 1
-                    processing_details.append(f"Multiple faces detected in file: {uploaded_file.name}")
-                    continue
-                x, y, w, h = faces[0]
-                face_crop = crop_and_resize_face(image, (x, y, w, h))
-                save_face_image(selected_employee_code, face_crop)
-                stats["saved"] += 1
-                processing_details.append(f"Saved: {uploaded_file.name}")
-            result_col_1, result_col_2, result_col_3, result_col_4 = st.columns(4)
-            result_col_1.metric("Saved", stats["saved"])
-            result_col_2.metric("No Face", stats["no_face"])
-            result_col_3.metric("Multiple Faces", stats["multiple_faces"])
-            result_col_4.metric("Invalid", stats["invalid"])
-            if stats["saved"]:
-                st.toast(f"Saved {stats['saved']} image(s) for {selected_employee_code}.")
-            with st.expander("Processing Details"):
-                for detail in processing_details:
-                    st.write(f"- {detail}")
+tab_camera, tab_upload = st.tabs(["📷 Camera Capture", "📁 Upload Images"])
 
 with tab_camera:
-    with st.container(border=True):
-        st.subheader("Capture Face From Camera")
-        st.caption("Keep exactly one face in the frame before saving.")
-        control_col_1, control_col_3 = st.columns([1, 1])
-        with control_col_1:
-            st.selectbox("Choose camera", [0, 1], key=f"{PAGE_KEY}_camera_index")
-        with control_col_3:
-            capture_button = st.button("Capture Face", type="primary", use_container_width=True)
+    cam_col, info_col = st.columns([1.5, 1], gap="large")
+    with cam_col:
+        st.markdown("### Live Preview")
+        st.markdown(
+            """
+            <style>
+            .stVideo { border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+            </style>
+            """, 
+            unsafe_allow_html=True
+        )
 
         RTC_CONFIGURATION = RTCConfiguration(
             {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
@@ -149,18 +106,65 @@ with tab_camera:
             async_processing=True,
         )
 
+    with info_col:
+        st.markdown("### Capture Controls")
+        st.caption("Step 1. Start the camera and look straight.")
+        st.caption("Step 2. Keep exactly one face in the frame.")
+        st.caption("Step 3. Click Capture.")
+        
+        st.selectbox("Camera Source", [0, 1], key=f"{PAGE_KEY}_camera_index", disabled=True, help="Browser manages camera source.")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        capture_button = st.button("📸 Capture Face", type="primary", use_container_width=True)
+
         if capture_button:
             if not (ctx and ctx.state.playing and ctx.video_processor and ctx.video_processor.frame_bgr is not None):
-                st.toast("Camera is not running or no frame available.")
+                st.toast("⚠️ Camera is not running or no frame available.")
             else:
                 latest_frame = ctx.video_processor.frame_bgr
                 latest_faces, _ = detect_faces(latest_frame)
                 if len(latest_faces) == 0:
-                    st.toast("No face detected. Cannot save.")
+                    st.toast("⚠️ No face detected. Cannot save.")
                 elif len(latest_faces) > 1:
-                    st.toast("Multiple faces detected. Please keep exactly one face in frame.")
+                    st.toast("⚠️ Multiple faces detected. Keep exactly one face in frame.")
                 else:
                     x, y, w, h = latest_faces[0]
                     face_crop = crop_and_resize_face(latest_frame, (x, y, w, h))
                     save_path = save_face_image(selected_employee_code, face_crop)
-                    st.toast(f"Saved: {save_path}")
+                    st.toast(f"✅ Saved face image!")
+
+
+with tab_upload:
+    with st.container(border=True):
+        st.subheader("Upload Existing Photos")
+        st.caption("Use clear frontal face images. Max 1 person per image.")
+        uploaded_files = st.file_uploader(
+            "Upload one or more images",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+        )
+        if uploaded_files and st.button("Process Uploaded Images", type="primary", use_container_width=True):
+            stats = {"saved": 0, "no_face": 0, "multiple_faces": 0, "invalid": 0}
+            for uploaded_file in uploaded_files:
+                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if image is None:
+                    stats["invalid"] += 1
+                    continue
+                faces, _ = detect_faces(image)
+                if len(faces) == 0:
+                    stats["no_face"] += 1
+                    continue
+                if len(faces) > 1:
+                    stats["multiple_faces"] += 1
+                    continue
+                
+                x, y, w, h = faces[0]
+                face_crop = crop_and_resize_face(image, (x, y, w, h))
+                save_face_image(selected_employee_code, face_crop)
+                stats["saved"] += 1
+                
+            if stats["saved"]:
+                st.toast(f"✅ Successfully saved {stats['saved']} image(s).")
+            if stats["no_face"] or stats["multiple_faces"] or stats["invalid"]:
+                st.toast(f"⚠️ Skipped {stats['no_face'] + stats['multiple_faces'] + stats['invalid']} invalid image(s).")

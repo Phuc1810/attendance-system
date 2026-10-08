@@ -74,6 +74,15 @@ with preview_col:
         st.subheader("Live Recognition")
         st.caption("Keep exactly one face visible if you want a clean recognition result.")
         
+        st.markdown(
+            """
+            <style>
+            .stVideo { border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+            </style>
+            """, 
+            unsafe_allow_html=True
+        )
+        
         ctx = webrtc_streamer(
             key="face_recognition",
             mode=WebRtcMode.SENDRECV,

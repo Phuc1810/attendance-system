@@ -28,6 +28,15 @@ with preview_col:
         st.subheader("Live Preview")
         st.caption("The green boxes show the faces currently detected by the model.")
         
+        st.markdown(
+            """
+            <style>
+            .stVideo { border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+            </style>
+            """, 
+            unsafe_allow_html=True
+        )
+        
         ctx = webrtc_streamer(
             key="face_detection",
             mode=WebRtcMode.SENDRECV,
