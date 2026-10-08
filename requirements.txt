@@ -4,3 +4,4 @@ numpy==2.4.3
 pandas==2.3.3
 SQLAlchemy>=2.0.0
 streamlit-webrtc
+plotly
