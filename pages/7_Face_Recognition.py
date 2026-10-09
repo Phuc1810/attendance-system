@@ -3,6 +3,7 @@ import cv2
 import streamlit as st
 
 from core.camera_stream import (
+    clear_prediction_cache,
     get_or_create_camera,
     get_or_update_prediction,
     release_camera,
@@ -93,6 +94,7 @@ with control_col_2:
         if st.button("⏹️ Tắt", use_container_width=True):
             st.session_state[f"{PAGE_KEY}_is_running"] = False
             release_camera(st.session_state, PAGE_KEY)
+            clear_prediction_cache(st.session_state, PAGE_KEY)
             st.rerun()
 
 with control_col_3:
@@ -104,6 +106,7 @@ previous_camera_index = st.session_state.get(f"{PAGE_KEY}_active_camera_index")
 if previous_camera_index != selected_camera_index:
     st.session_state[f"{PAGE_KEY}_active_camera_index"] = selected_camera_index
     release_camera(st.session_state, PAGE_KEY)
+    clear_prediction_cache(st.session_state, PAGE_KEY)
 
 preview_col, status_col = st.columns([1.5, 1], gap="large")
 
@@ -168,20 +171,25 @@ else:
                 is_new_prediction = False
                 model_error = True
 
+            # Vẽ Bounding Box trực quan theo trạng thái nhận diện thực tế
             for (x, y, w, h) in faces_list:
-                if len(faces_list) == 1 and prediction is not None:
-                    if prediction.get("is_match", False):
-                        label_text = f"{prediction['display_code']} ({prediction['confidence']:.2f})"
-                        box_color = (0, 255, 0)
-                    else:
-                        label_text = f"Unknown ({prediction['confidence']:.2f} > {prediction['match_threshold']:.2f})"
-                        box_color = (0, 0, 255)
+                if len(faces_list) > 1:
+                    label_text = f"Multiple faces ({len(faces_list)})"
+                    box_color = (0, 165, 255)  # Màu cam cảnh báo
                 elif model_error:
                     label_text = "Model error"
-                    box_color = (0, 0, 255)
+                    box_color = (0, 0, 255)    # Màu đỏ lỗi
+                elif prediction is not None:
+                    if prediction.get("is_match", False):
+                        label_text = f"{prediction['display_code']} ({prediction['confidence']:.2f})"
+                        box_color = (0, 255, 0)  # Màu xanh lá nhận diện chuẩn xác
+                    else:
+                        label_text = f"Unknown ({prediction['confidence']:.2f})"
+                        box_color = (0, 0, 255)  # Màu đỏ chưa đăng ký
                 else:
-                    label_text = "Face detected"
-                    box_color = (0, 215, 255)
+                    # Đang quét / phân tích khuôn mặt lần đầu (chưa có kết quả)
+                    label_text = "Scanning..."
+                    box_color = (0, 215, 255)  # Màu vàng cam đang quét
 
                 cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), box_color, 2)
                 cv2.putText(
@@ -238,19 +246,20 @@ else:
                         st.caption("Hãy đứng thẳng trước camera.")
                     elif len(faces_list) > 1:
                         st.write("**Status:** Phát hiện nhiều khuôn mặt")
-                        st.warning("Vui lòng chỉ để 1 người trong khung hình.")
+                        st.warning(f"Phát hiện {len(faces_list)} khuôn mặt. Vui lòng chỉ để 1 người trong khung hình.")
+                    elif model_error:
+                        st.error("Lỗi khi chạy mô hình nhận diện.")
+                    elif prediction is None:
+                        st.write("**Status:** Đang phân tích...")
+                        st.info("🔍 Đang nhận diện khuôn mặt, vui lòng giữ yên...")
                     else:
-                        st.write("**Status:** Đang nhận diện...")
-                        if prediction:
-                            if prediction.get("is_match", False):
-                                st.success(f"Khớp nhân viên: **{prediction['display_code']}**")
-                                st.write(f"**Confidence:** {prediction['confidence']:.2f}")
-                                st.write(f"**Threshold:** {prediction['match_threshold']:.2f}")
-                            else:
-                                st.warning("Kết quả: **Unknown (Chưa nhận diện)**")
-                                st.write(f"**Confidence:** {prediction['confidence']:.2f}")
-                                st.write(f"**Threshold:** {prediction['match_threshold']:.2f}")
-                        elif model_error:
-                            st.error("Lỗi khi chạy mô hình nhận diện.")
+                        if prediction.get("is_match", False):
+                            st.success(f"Khớp nhân viên: **{prediction['display_code']}**")
+                            st.write(f"**Confidence:** {prediction['confidence']:.2f}")
+                            st.write(f"**Threshold:** {prediction['match_threshold']:.2f}")
+                        else:
+                            st.warning("Kết quả: **Unknown (Chưa nhận diện)**")
+                            st.write(f"**Confidence:** {prediction['confidence']:.2f}")
+                            st.write(f"**Threshold:** {prediction['match_threshold']:.2f}")
 
             time.sleep(0.005)
