@@ -197,6 +197,7 @@ def attempt_auto_attendance(camera_config, selected_camera_idx):
             confidence=recognized_confidence,
             camera_index=selected_camera_idx,
         )
+        st.session_state[f"{PAGE_KEY}_latest_success_log"] = new_log
         set_attendance_notice(
             "success",
             "Attendance Logged",
@@ -286,6 +287,8 @@ else:
         last_ui_time = 0.0
         last_rendered_faces = -1
         last_rendered_code = None
+        last_rendered_pred_code = None
+        last_rendered_pred_match = None
         last_rendered_cnt = -1
 
         # Vòng lặp phát video trực tiếp mượt mà liên tục (Live Loop)
@@ -320,21 +323,26 @@ else:
                 is_new_prediction = False
                 model_error = True
 
+            # Vẽ Bounding Box trực quan theo trạng thái nhận diện thực tế
             for (x, y, w, h) in faces_list:
-                if len(faces_list) == 1 and prediction is not None:
+                if len(faces_list) > 1:
+                    label_text = f"Multiple faces ({len(faces_list)})"
+                    box_color = (0, 165, 255)  # Màu cam cảnh báo
+                elif model_error:
+                    label_text = "Model error"
+                    box_color = (0, 0, 255)    # Màu đỏ lỗi
+                elif prediction is not None:
                     if prediction.get("is_match", False):
                         recognized_match = prediction
                         label_text = f"{prediction['display_code']} ({prediction['confidence']:.2f})"
-                        box_color = (0, 255, 0)
+                        box_color = (0, 255, 0)  # Màu xanh lá nhận diện chuẩn xác
                     else:
-                        label_text = f"Unknown ({prediction['confidence']:.2f} > {prediction['match_threshold']:.2f})"
-                        box_color = (0, 0, 255)
-                elif model_error:
-                    label_text = "Model error"
-                    box_color = (0, 0, 255)
+                        label_text = f"Unknown ({prediction['confidence']:.2f})"
+                        box_color = (0, 0, 255)  # Màu đỏ chưa đăng ký
                 else:
-                    label_text = "Face detected"
-                    box_color = (0, 215, 255)
+                    # Đang quét / phân tích khuôn mặt lần đầu (chưa có kết quả)
+                    label_text = "Scanning..."
+                    box_color = (0, 215, 255)  # Màu vàng cam đang quét
 
                 cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), box_color, 2)
                 cv2.putText(
@@ -381,10 +389,15 @@ else:
             # Điều tiết cập nhật widget trạng thái: chỉ vẽ lại khi có kết quả mới, đổi số mặt, hoặc định kỳ 0.25s
             rec_code = st.session_state.get(f"{PAGE_KEY}_recognized_employee_code")
             stable_cnt = st.session_state.get(f"{PAGE_KEY}_stable_frame_count", 0)
+            pred_code = prediction.get("display_code") if prediction else None
+            pred_match = prediction.get("is_match") if prediction else None
+
             ui_needed = (
                 is_new_prediction
                 or len(faces_list) != last_rendered_faces
                 or rec_code != last_rendered_code
+                or pred_code != last_rendered_pred_code
+                or pred_match != last_rendered_pred_match
                 or stable_cnt != last_rendered_cnt
                 or (now - last_ui_time >= 0.25)
             )
@@ -393,11 +406,13 @@ else:
                 last_ui_time = now
                 last_rendered_faces = len(faces_list)
                 last_rendered_code = rec_code
+                last_rendered_pred_code = pred_code
+                last_rendered_pred_match = pred_match
                 last_rendered_cnt = stable_cnt
 
                 with status_card_placeholder.container(border=True):
                     st.subheader("Recognition Status")
-                    if not rec_code:
+                    if len(faces_list) == 0:
                         st.markdown(
                             """
                             <div style="text-align: center; padding: 20px;">
@@ -406,18 +421,51 @@ else:
                             </div>
                             """, unsafe_allow_html=True
                         )
+                    elif len(faces_list) > 1:
+                        st.markdown(
+                            f"""
+                            <div style="padding: 15px; border-radius: 8px; background-color: #FEF3C7; border: 1px solid #F59E0B; text-align: center;">
+                                <h4 style="margin: 0; color: #B45309;">⚠️ Multiple Faces Detected</h4>
+                                <p style="margin: 5px 0 0 0; color: #92400E;">Phát hiện {len(faces_list)} khuôn mặt. Vui lòng chỉ đứng 1 người trước camera.</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
+                    elif model_error:
+                        st.error("❌ Lỗi mô hình: Không thể thực hiện nhận diện.")
+                    elif prediction is None:
+                        st.markdown(
+                            """
+                            <div style="padding: 15px; border-radius: 8px; background-color: #EFF6FF; border: 1px solid #3B82F6; text-align: center;">
+                                <h4 style="margin: 0; color: #1D4ED8;">🔍 Analyzing Face...</h4>
+                                <p style="margin: 5px 0 0 0; color: #1E40AF;">Đang phân tích khuôn mặt, vui lòng giữ yên...</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
+                    elif not prediction.get("is_match", False):
+                        st.markdown(
+                            f"""
+                            <div style="padding: 15px; border-radius: 8px; background-color: #FEE2E2; border: 1px solid #EF4444; text-align: center;">
+                                <h4 style="margin: 0; color: #B91C1C;">❌ Unknown Employee</h4>
+                                <p style="margin: 5px 0 0 0; color: #991B1B;">Khuôn mặt chưa được đăng ký trong hệ thống.</p>
+                                <p style="margin: 4px 0 0 0; font-size: 0.85em; color: #7F1D1D;">Độ tin cậy: {prediction['confidence']:.2f} > Ngưỡng: {prediction['match_threshold']:.2f}</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
                     else:
+                        # Khớp nhân viên hợp lệ (Target Locked)
                         disp_cnt = min(stable_cnt, AUTO_MATCH_REQUIRED_FRAMES)
-                        st.markdown(f"**Target Locked: {rec_code}**")
+                        st.markdown(f"**🎯 Target Locked: {rec_code}**")
                         st.progress(
                             min(stable_cnt / AUTO_MATCH_REQUIRED_FRAMES, 1.0),
                             text=f"Stabilizing... ({disp_cnt} / {AUTO_MATCH_REQUIRED_FRAMES} frames)",
                         )
                         if stable_cnt >= AUTO_MATCH_REQUIRED_FRAMES:
-                            st.success("✅ Xác thực thành công! Đang lưu điểm danh...")
+                            st.success(f"✅ Xác thực thành công: **{rec_code}**! Đang ghi nhận điểm danh...")
                         else:
-                            st.info(f"Giữ yên mặt thêm {AUTO_MATCH_REQUIRED_FRAMES - stable_cnt} frame.")
+                            st.info(f"Giữ yên mặt thêm {AUTO_MATCH_REQUIRED_FRAMES - stable_cnt} frame...")
 
+                # Hiển thị thẻ log điểm danh mới nhất hoặc thông tin nhân viên vừa quét
+                latest_log = st.session_state.get(f"{PAGE_KEY}_latest_success_log")
                 if rec_code:
                     rec_conf = st.session_state.get(f"{PAGE_KEY}_recognized_confidence", 0)
                     latest_log_placeholder.markdown(
@@ -425,6 +473,16 @@ else:
                         <div style="background-color: #FFFFFF; padding: 15px; border-radius: 8px; border: 1px solid #10B981; margin-top: 15px;">
                             <h4 style="margin:0; color: #10B981;">{rec_code}</h4>
                             <p style="margin: 5px 0 0 0; color: #334155;">Confidence: <b>{rec_conf:.2f}</b></p>
+                        </div>
+                        """, unsafe_allow_html=True
+                    )
+                elif latest_log:
+                    latest_log_placeholder.markdown(
+                        f"""
+                        <div style="background-color: #F0FDF4; padding: 15px; border-radius: 8px; border: 1px solid #10B981; margin-top: 15px;">
+                            <span style="background-color: #10B981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold;">{latest_log.get('log_type', 'IN')}</span>
+                            <h4 style="margin:5px 0 0 0; color: #047857;">{latest_log.get('employee_code')}</h4>
+                            <p style="margin: 3px 0 0 0; font-size: 0.9em; color: #334155;">Thời gian: <b>{latest_log.get('log_time')}</b></p>
                         </div>
                         """, unsafe_allow_html=True
                     )
