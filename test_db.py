@@ -19,6 +19,13 @@ try:
     update_employee(last_id, "Updated Name", "HR")
     print("Updated")
     
+    # Đảm bảo dọn dẹp các log cũ nếu có của mã nhân viên test để test chạy độc lập (idempotent)
+    from db.session import SessionLocal
+    from db.models import AttendanceLog
+    with SessionLocal() as db_session:
+        db_session.query(AttendanceLog).filter(AttendanceLog.employee_code == code).delete()
+        db_session.commit()
+
     register_check_in(code, "Laptop", 0.95)
     print("Checked in")
     

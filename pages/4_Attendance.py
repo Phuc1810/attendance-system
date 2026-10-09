@@ -9,6 +9,7 @@ from core.camera_stream import (
     STREAM_SLEEP_INTERVAL,
     get_or_create_camera,
     get_or_update_prediction,
+    read_camera_frame,
     release_camera,
     release_inactive_cameras,
     render_stream_frame,
@@ -296,7 +297,7 @@ else:
 
         # Vòng lặp phát video trực tiếp mượt mà liên tục (Live Loop)
         while st.session_state.get(f"{PAGE_KEY}_is_running", False):
-            ret, frame = cap.read()
+            ret, frame = read_camera_frame(cap)
             if not ret or frame is None:
                 video_placeholder.warning("Mất tín hiệu camera hoặc đang khởi tạo...")
                 time.sleep(0.03)
@@ -371,13 +372,12 @@ else:
                 2,
             )
 
-            # Cập nhật kết quả nhận diện & điểm danh tự động (chỉ tăng stable count khi có prediction mới ngầm)
+            # Cập nhật kết quả nhận diện & điểm danh tự động (duy trì tracking mượt mà qua các frame)
             if len(faces_list) == 1 and recognized_match is not None:
                 st.session_state[f"{PAGE_KEY}_recognized_employee_code"] = recognized_match["display_code"]
                 st.session_state[f"{PAGE_KEY}_recognized_confidence"] = recognized_match["confidence"]
                 st.session_state[f"{PAGE_KEY}_recognized_threshold"] = recognized_match["match_threshold"]
-                if is_new_prediction:
-                    update_stability_state(recognized_match)
+                update_stability_state(recognized_match)
                 attempt_auto_attendance(selected_camera_config, selected_camera_index)
             else:
                 clear_tracking_state()

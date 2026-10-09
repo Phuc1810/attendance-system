@@ -9,6 +9,8 @@ from core.camera_stream import (
     STREAM_FRAME_INTERVAL,
     STREAM_SLEEP_INTERVAL,
     render_stream_frame,
+    read_camera_frame,
+    PredictionStore,
 )
 from db.database import initialize_database
 from db.attendance_repo import (
@@ -24,12 +26,11 @@ class StrictStreamlitMockPlaceholder:
     MockPlaceholder mô phỏng chính xác 100% chữ ký hàm st.image / DeltaGenerator.image của Streamlit.
     Tuyệt đối không dùng **kwargs để phát hiện ngay bất kỳ lỗi tham số nào.
     """
-    def __init__(self, simulate_bytes_error: bool = False):
+    def __init__(self):
         self.call_count = 0
         self.last_image = None
-        self.last_output_format = None
         self.last_channels = None
-        self.simulate_bytes_error = simulate_bytes_error
+        self.last_use_container_width = None
 
     def image(
         self,
@@ -44,17 +45,32 @@ class StrictStreamlitMockPlaceholder:
         use_container_width=None,
         link=None,
     ):
-        if self.simulate_bytes_error and isinstance(image, bytes):
-            raise RuntimeError("Simulated bytes failure to trigger Tier 2 fallback")
-
         self.call_count += 1
         self.last_image = image
-        self.last_output_format = output_format
         self.last_channels = channels
+        self.last_use_container_width = use_container_width
+
+
+class MockCameraDevice:
+    def __init__(self):
+        self.grab_count = 0
+        self.read_count = 0
+
+    def isOpened(self):
+        return True
+
+    def grab(self):
+        self.grab_count += 1
+        return True
+
+    def read(self):
+        self.read_count += 1
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        return True, frame
 
 
 def test_attendance_streaming_timing():
-    print("Testing Attendance Streaming Timing with Strict Streamlit Mock...")
+    print("1. Testing Attendance Direct RGB Streaming Timing (30 FPS)...")
     placeholder = StrictStreamlitMockPlaceholder()
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -75,17 +91,29 @@ def test_attendance_streaming_timing():
     fps = placeholder.call_count
     print(f"  Iterations in 1.0s: {iterations}")
     print(f"  Rendered frames in 1.0s: {fps} FPS")
-    print(f"  Output Format: {placeholder.last_output_format}, Payload size: {len(placeholder.last_image)} bytes")
+    print(f"  Image channels: {placeholder.last_channels}, use_container_width: {placeholder.last_use_container_width}")
 
-    # Xác thực tốc độ và định dạng
-    assert 12 <= fps <= 16, f"FPS out of target range: {fps}"
-    assert placeholder.last_output_format == "JPEG", f"Expected output_format='JPEG', got {placeholder.last_output_format}"
-    assert isinstance(placeholder.last_image, bytes)
-    print("  Streaming rate matches Golden FPS (12-16 FPS) & output_format='JPEG' -> PASSED!")
+    # Xác thực tốc độ và định dạng RGB trực tiếp
+    assert fps >= 22, f"FPS too low: {fps} FPS (expected >= 22 FPS)"
+    assert placeholder.last_channels == "RGB", f"Expected channels='RGB', got {placeholder.last_channels}"
+    assert placeholder.last_use_container_width is True
+    assert isinstance(placeholder.last_image, np.ndarray), f"Expected ndarray image, got {type(placeholder.last_image)}"
+    print("  Streaming rate matches 30 FPS target & Direct RGB image -> PASSED!")
+
+
+def test_attendance_read_frame_flush():
+    print("\n2. Testing Attendance Camera Buffer Flushing...")
+    mock_cam = MockCameraDevice()
+    ret, frame = read_camera_frame(mock_cam)
+    assert ret is True
+    assert frame is not None
+    assert mock_cam.grab_count == 1, "Must call cap.grab() to flush buffer"
+    assert mock_cam.read_count == 1, "Must call cap.read() to get latest frame"
+    print("  DirectShow frame buffer flush -> PASSED!")
 
 
 def test_attendance_auto_log_integration():
-    print("\nTesting Auto Attendance Integration with Stability Flow...")
+    print("\n3. Testing Auto Attendance Flow (3 Stable Frames + Cooldown)...")
     initialize_database()
     initialize_attendance_logs()
 
@@ -111,7 +139,7 @@ def test_attendance_auto_log_integration():
         else:
             stable_code = pred_code
             stable_count = 1
-        print(f"  Step {step}: Code={stable_code}, Stable Count={stable_count}")
+        print(f"  Frame {step}: Code={stable_code}, Stable Count={stable_count}")
 
     assert stable_count == REQUIRED_FRAMES, f"Expected {REQUIRED_FRAMES}, got {stable_count}"
 
@@ -143,7 +171,7 @@ def test_attendance_auto_log_integration():
 
 
 def test_attendance_syntax_compile():
-    print("\nTesting Syntax and Compilation of pages/4_Attendance.py...")
+    print("\n4. Testing Syntax and Compilation of pages/4_Attendance.py...")
     with open("pages/4_Attendance.py", "r", encoding="utf-8") as f:
         code = f.read()
     compile(code, "pages/4_Attendance.py", "exec")
@@ -152,6 +180,7 @@ def test_attendance_syntax_compile():
 
 if __name__ == "__main__":
     test_attendance_streaming_timing()
+    test_attendance_read_frame_flush()
     test_attendance_auto_log_integration()
     test_attendance_syntax_compile()
     print("\n>>> ALL PHASE 2 ATTENDANCE INTEGRATION TESTS PASSED SUCCESSFULLY! <<<")

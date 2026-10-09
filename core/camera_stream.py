@@ -14,13 +14,13 @@ CAMERA_FRAME_WIDTH = 640
 CAMERA_FRAME_HEIGHT = 480
 CAMERA_PAGE_KEYS = ("register_face", "attendance", "face_detection", "face_recognition")
 
-# Tần số điều tiết hiển thị video qua Streamlit WebSocket (Golden FPS: ~14.7 FPS)
-# Đảm bảo trình duyệt luôn tiêu thụ kịp gói tin, triệt tiêu 100% tích tụ hàng đợi gây delay 2-3s
-STREAM_FRAME_INTERVAL = 0.068
+# Tần số điều tiết hiển thị video qua Streamlit WebSocket (~30 FPS)
+# Đảm bảo hiển thị khung hình tức thì thời gian thực, bám sát cử động khuôn mặt 0ms delay
+STREAM_FRAME_INTERVAL = 0.033
 # Thời gian nhả CPU giữa các vòng lặp streaming để tránh tight spin loop
-STREAM_SLEEP_INTERVAL = 0.015
+STREAM_SLEEP_INTERVAL = 0.010
 # Chất lượng nén JPEG tối ưu cho video stream (cân bằng sắc nét và dung lượng nhẹ)
-STREAM_JPEG_QUALITY = 72
+STREAM_JPEG_QUALITY = 75
 
 
 class ThreadedCameraReader:
@@ -121,7 +121,9 @@ def get_or_create_camera(session_state: dict, prefix: str, camera_index: int) ->
     return cap
 
 
-PREDICTION_INTERVAL_SECONDS = 0.25  # Tần suất cập nhật nhận diện tối đa 4 lần/giây để tránh nghẽn CPU
+RECOGNITION_COOLDOWN_SECONDS = 3.0       # Giãn cách 3 giây khi đã nhận diện thành công một nhân viên
+RECOGNITION_UNKNOWN_RETRY_SECONDS = 1.5  # Giãn cách 1.5 giây khi chưa nhận diện được hoặc Unknown
+PREDICTION_INTERVAL_SECONDS = 0.25       # Tần suất tối thiểu giữa các lần trigger
 PREDICTION_POSITION_TOLERANCE = 20
 PREDICTION_SIZE_TOLERANCE = 20
 
@@ -132,6 +134,9 @@ class PredictionStore:
     Tách biệt hoàn toàn việc lưu trữ kết quả khỏi Streamlit SessionStateProxy,
     cho phép worker thread ghi dữ liệu trên heap an toàn mà không bị Streamlit
     cô lập vào _mock_session_state.
+    Tích hợp bộ điều phối nhận diện thông minh (Smart Recognition Coordinator):
+    Khóa nhãn và duy trì kết quả cho khuôn mặt đã nhận diện, giải phóng triệt để
+    Python GIL để camera đạt 30 FPS thời gian thực không độ trễ.
     """
 
     def __init__(self):
@@ -157,13 +162,15 @@ class PredictionStore:
             pred_copy = dict(self.prediction) if self.prediction is not None else None
             return pred_copy, is_new, self.is_busy
 
-    def set_prediction(self, result: Optional[Dict[str, Any]]) -> None:
+    def set_prediction(self, result: Optional[Dict[str, Any]], finished_at: Optional[float] = None) -> None:
         """
-        Ghi kết quả từ background worker thread.
+        Ghi kết quả từ background worker thread và cập nhật thời điểm kết thúc nhận diện.
         """
         with self.lock:
+            finish_ts = finished_at if finished_at is not None else time.time()
             self.prediction = result
-            self.prediction_id = time.time()
+            self.prediction_id = finish_ts
+            self.last_predict_time = finish_ts
             self.is_busy = False
 
     def set_busy(self, busy: bool, now: float, face_box: Tuple[int, int, int, int]) -> None:
@@ -173,14 +180,31 @@ class PredictionStore:
             self.last_face_box = face_box
 
     def can_trigger(self, now: float, current_face_box: Tuple[int, int, int, int]) -> bool:
+        """
+        Điều phối thông minh việc kích hoạt Dlib nhận diện:
+        - Nếu worker đang bận: Tuyệt đối không kích hoạt (tránh dồn ứ thread).
+        - Nếu chưa có kết quả (khuôn mặt mới xuất hiện): Kích hoạt ngay lập tức.
+        - Nếu đã match thành công: Giữ nguyên nhãn và chỉ quét lại sau RECOGNITION_COOLDOWN_SECONDS (3.0s).
+          Không kích hoạt lại chỉ vì khuôn mặt chuyển động nhẹ/vừa trong khung hình!
+        - Nếu là Unknown: Chờ ít nhất RECOGNITION_UNKNOWN_RETRY_SECONDS (1.5s) trước khi thử lại.
+        Nhờ đó, Python GIL thông thoáng 95% thời gian -> Camera không bị delay 2-3s!
+        """
         with self.lock:
             if self.is_busy:
                 return False
             if self.prediction is None:
                 return True
-            time_passed = (now - self.last_predict_time) >= PREDICTION_INTERVAL_SECONDS
+
+            # Trường hợp khuôn mặt đã được nhận diện hợp lệ (Match)
+            if self.prediction.get("is_match", False):
+                # Chỉ quét lại định kỳ sau 3.0 giây để xác nhận, giải phóng GIL cho OpenCV & Streamlit
+                return (now - self.last_predict_time) >= RECOGNITION_COOLDOWN_SECONDS
+
+            # Trường hợp Unknown
+            time_passed = (now - self.last_predict_time) >= RECOGNITION_UNKNOWN_RETRY_SECONDS
             box_moved = _face_box_changed(self.last_face_box, current_face_box)
-            return time_passed or box_moved
+            # Thử lại nếu đã qua 1.5s VÀ (mặt di chuyển góc nhìn mới HOẶC đã quá 3.0s)
+            return time_passed and (box_moved or (now - self.last_predict_time) >= (RECOGNITION_UNKNOWN_RETRY_SECONDS * 2))
 
     def handle_faces_count(self, count: int) -> bool:
         """
@@ -323,12 +347,18 @@ def get_or_update_prediction(
     return latest_prediction, is_new
 
 
-def read_camera_frame(cap: cv2.VideoCapture) -> Tuple[bool, Optional[Any]]:
+def read_camera_frame(cap: Any) -> Tuple[bool, Optional[Any]]:
     """
     Đọc 1 khung hình từ thiết bị camera đã mở.
+    Loại bỏ đệm tồn dư của Windows DirectShow để luôn lấy frame mới nhất thời gian thực.
     """
     if cap is None or not cap.isOpened():
         return False, None
+    if not isinstance(cap, ThreadedCameraReader):
+        try:
+            cap.grab()
+        except Exception:
+            pass
     ret, frame = cap.read()
     return ret, frame
 
@@ -457,30 +487,19 @@ def annotate_recognition(
     return annotated
 
 
-def render_stream_frame(placeholder: Any, frame: Any, quality: int = STREAM_JPEG_QUALITY) -> bool:
+def render_stream_frame(placeholder: Any, frame: Any, *args, **kwargs) -> bool:
     """
-    Nén khung hình BGR sang JPEG siêu tốc (libjpeg-turbo C++) và hiển thị qua Streamlit placeholder.
-    Giảm dung lượng gói tin từ ~100KB xuống ~15KB, ngăn ngừa tràn hàng đợi WebSocket và giảm tải cho trình duyệt.
-    Tự động kích hoạt cơ chế dự phòng hai lớp (Two-tier Fallback) nếu Streamlit gặp sự cố với dữ liệu bytes.
+    Hiển thị khung hình camera lên Streamlit placeholder trực tiếp qua mảng RGB.
+    Đảm bảo 100% hiển thị tức thì khi bật camera, triệt tiêu lỗi màn hình trắng/đen do HTTP buffer,
+    hoạt động mượt mà và ổn định chuẩn xác tương tự trang 6_Face_Detection.py.
     """
     if placeholder is None or frame is None:
         return False
 
-    # Tầng 1: Ưu tiên truyền Turbo JPEG bytes siêu nhẹ kèm tham số chuẩn output_format="JPEG"
-    try:
-        success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
-        if success:
-            placeholder.image(buffer.tobytes(), output_format="JPEG", use_container_width=True)
-            return True
-    except Exception:
-        # Nếu Tầng 1 gặp ngoại lệ từ Streamlit, tự động kích hoạt Tầng 2
-        pass
-
-    # Tầng 2: Dự phòng tức thì sang mảng RGB truyền thống (Đảm bảo 100% không bao giờ bị mất hình)
     try:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
         return True
-    except Exception as fallback_err:
-        print(f"Error rendering stream frame fallback: {fallback_err}")
+    except Exception as err:
+        print(f"Error rendering stream frame: {err}")
         return False

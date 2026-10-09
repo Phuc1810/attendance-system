@@ -10,6 +10,7 @@ from core.camera_stream import (
     STREAM_FRAME_INTERVAL,
     STREAM_SLEEP_INTERVAL,
     render_stream_frame,
+    read_camera_frame,
     PredictionStore,
 )
 from db.database import initialize_database
@@ -20,12 +21,11 @@ class StrictStreamlitMockPlaceholder:
     MockPlaceholder mô phỏng chính xác 100% chữ ký hàm st.image / DeltaGenerator.image của Streamlit.
     Tuyệt đối không dùng **kwargs để phát hiện ngay bất kỳ lỗi tham số nào.
     """
-    def __init__(self, simulate_bytes_error: bool = False):
+    def __init__(self):
         self.call_count = 0
         self.last_image = None
-        self.last_output_format = None
         self.last_channels = None
-        self.simulate_bytes_error = simulate_bytes_error
+        self.last_use_container_width = None
 
     def image(
         self,
@@ -40,17 +40,32 @@ class StrictStreamlitMockPlaceholder:
         use_container_width=None,
         link=None,
     ):
-        if self.simulate_bytes_error and isinstance(image, bytes):
-            raise RuntimeError("Simulated Streamlit bytes error to trigger Tier 2 fallback")
-
         self.call_count += 1
         self.last_image = image
-        self.last_output_format = output_format
         self.last_channels = channels
+        self.last_use_container_width = use_container_width
+
+
+class MockCameraDevice:
+    def __init__(self):
+        self.grab_count = 0
+        self.read_count = 0
+
+    def isOpened(self):
+        return True
+
+    def grab(self):
+        self.grab_count += 1
+        return True
+
+    def read(self):
+        self.read_count += 1
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        return True, frame
 
 
 def test_face_recognition_streaming_timing():
-    print("Testing Face Recognition Streaming Timing with Strict Streamlit Mock...")
+    print("1. Testing Face Recognition Direct RGB Streaming Timing (30 FPS)...")
     placeholder = StrictStreamlitMockPlaceholder()
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -71,17 +86,18 @@ def test_face_recognition_streaming_timing():
     fps = placeholder.call_count
     print(f"  Iterations in 1.0s: {iterations}")
     print(f"  Rendered frames in 1.0s: {fps} FPS")
-    print(f"  Output Format: {placeholder.last_output_format}, Payload size: {len(placeholder.last_image)} bytes")
+    print(f"  Image channels: {placeholder.last_channels}, use_container_width: {placeholder.last_use_container_width}")
 
-    # Xác thực tốc độ và định dạng
-    assert 12 <= fps <= 16, f"FPS out of target range: {fps}"
-    assert placeholder.last_output_format == "JPEG", f"Expected output_format='JPEG', got {placeholder.last_output_format}"
-    assert isinstance(placeholder.last_image, bytes)
-    print("  Streaming rate matches Golden FPS (12-16 FPS) & output_format='JPEG' -> PASSED!")
+    # Xác thực tốc độ và định dạng RGB trực tiếp
+    assert fps >= 22, f"FPS too low: {fps} FPS (expected >= 22 FPS)"
+    assert placeholder.last_channels == "RGB", f"Expected channels='RGB', got {placeholder.last_channels}"
+    assert placeholder.last_use_container_width is True
+    assert isinstance(placeholder.last_image, np.ndarray), f"Expected ndarray image, got {type(placeholder.last_image)}"
+    print("  Streaming rate matches 30 FPS target & Direct RGB image -> PASSED!")
 
 
 def test_face_recognition_annotation_and_render():
-    print("\nTesting Face Recognition Bounding Box Annotation and JPEG Rendering...")
+    print("\n2. Testing Face Recognition Bounding Box Annotation and Direct RGB Rendering...")
     placeholder = StrictStreamlitMockPlaceholder()
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -103,12 +119,13 @@ def test_face_recognition_annotation_and_render():
 
     t0 = time.perf_counter()
     success = render_stream_frame(placeholder, annotated)
-    encode_ms = (time.perf_counter() - t0) * 1000
+    render_ms = (time.perf_counter() - t0) * 1000
 
     assert success is True
-    assert placeholder.last_output_format == "JPEG"
-    assert isinstance(placeholder.last_image, bytes)
-    print(f"  Rendered Match Frame: {len(placeholder.last_image)} bytes in {encode_ms:.2f}ms (output_format=JPEG) -> PASSED!")
+    assert placeholder.last_channels == "RGB"
+    assert placeholder.last_use_container_width is True
+    assert isinstance(placeholder.last_image, np.ndarray)
+    print(f"  Rendered Match Frame: {render_ms:.2f}ms (Direct RGB) -> PASSED!")
 
     # 2. Test Unknown Annotation (Đỏ)
     pred_unknown = {
@@ -126,25 +143,35 @@ def test_face_recognition_annotation_and_render():
 
     success_unk = render_stream_frame(placeholder, annotated_unk)
     assert success_unk is True
-    assert placeholder.last_output_format == "JPEG"
-    print(f"  Rendered Unknown Frame: {len(placeholder.last_image)} bytes -> PASSED!")
+    assert placeholder.last_channels == "RGB"
+    print("  Rendered Unknown Frame -> PASSED!")
+
+    # 3. Test Multiple Faces Annotation (Cam)
+    faces_multi = [(100, 100, 150, 150), (300, 100, 150, 150)]
+    annotated_multi = frame.copy()
+    for (x, y, w, h) in faces_multi:
+        label = f"Multiple faces ({len(faces_multi)})"
+        cv2.rectangle(annotated_multi, (x, y), (x + w, y + h), (0, 165, 255), 2)
+        cv2.putText(annotated_multi, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+
+    success_multi = render_stream_frame(placeholder, annotated_multi)
+    assert success_multi is True
+    print("  Rendered Multiple Faces Frame -> PASSED!")
 
 
-def test_face_recognition_fallback_tier():
-    print("\nTesting Face Recognition Tier 2 Fallback Execution...")
-    fallback_placeholder = StrictStreamlitMockPlaceholder(simulate_bytes_error=True)
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    success = render_stream_frame(fallback_placeholder, frame)
-    assert success is True, "Fallback render failed"
-    assert fallback_placeholder.call_count == 1
-    assert isinstance(fallback_placeholder.last_image, np.ndarray)
-    assert fallback_placeholder.last_channels == "RGB"
-    print(f"  Tier 2 Fallback successfully activated: channels={fallback_placeholder.last_channels} -> PASSED!")
+def test_face_recognition_directshow_flush():
+    print("\n3. Testing Face Recognition Camera Buffer Flushing...")
+    mock_cam = MockCameraDevice()
+    ret, frame = read_camera_frame(mock_cam)
+    assert ret is True
+    assert frame is not None
+    assert mock_cam.grab_count == 1, "Must call cap.grab() to flush buffer"
+    assert mock_cam.read_count == 1, "Must call cap.read() to get latest frame"
+    print("  DirectShow frame buffer flush -> PASSED!")
 
 
 def test_both_pages_syntax_and_import():
-    print("\nTesting Syntax and Compilation Integrity of Both Target Pages...")
+    print("\n4. Testing Syntax and Compilation Integrity of Both Target Pages...")
     for page_path in ["pages/4_Attendance.py", "pages/7_Face_Recognition.py"]:
         with open(page_path, "r", encoding="utf-8") as f:
             code = f.read()
@@ -155,6 +182,6 @@ def test_both_pages_syntax_and_import():
 if __name__ == "__main__":
     test_face_recognition_streaming_timing()
     test_face_recognition_annotation_and_render()
-    test_face_recognition_fallback_tier()
+    test_face_recognition_directshow_flush()
     test_both_pages_syntax_and_import()
     print("\n>>> ALL PHASE 3 FACE RECOGNITION INTEGRATION TESTS PASSED SUCCESSFULLY! <<<")

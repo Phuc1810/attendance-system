@@ -8,6 +8,7 @@ from core.camera_stream import (
     clear_prediction_cache,
     get_or_create_camera,
     get_or_update_prediction,
+    read_camera_frame,
     release_camera,
     release_inactive_cameras,
     render_stream_frame,
@@ -144,7 +145,7 @@ else:
         last_rendered_pred_id = None
 
         while st.session_state.get(f"{PAGE_KEY}_is_running", False):
-            ret, frame = cap.read()
+            ret, frame = read_camera_frame(cap)
             if not ret or frame is None:
                 video_placeholder.warning("Đang chờ khung hình...")
                 time.sleep(0.03)
