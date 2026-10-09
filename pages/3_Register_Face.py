@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 import cv2
 import numpy as np
 import streamlit as st
@@ -15,22 +16,15 @@ from core.save_face import crop_and_resize_face, save_face_image
 from db.database import get_all_employees, initialize_database
 
 PAGE_KEY = "register_face"
-CAMERA_INTERVAL_SECONDS = 0.1
 FACE_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "faces"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 initialize_database()
 
-if f"{PAGE_KEY}_run_camera" not in st.session_state:
-    st.session_state[f"{PAGE_KEY}_run_camera"] = False
+if f"{PAGE_KEY}_is_running" not in st.session_state:
+    st.session_state[f"{PAGE_KEY}_is_running"] = False
 
 release_inactive_cameras(st.session_state, PAGE_KEY)
-
-camera_run_every = (
-    CAMERA_INTERVAL_SECONDS
-    if st.session_state.get(f"{PAGE_KEY}_run_camera", False)
-    else None
-)
 
 def count_employee_images(employee_code):
     employee_folder = FACE_DATA_DIR / employee_code
@@ -41,7 +35,7 @@ def count_employee_images(employee_code):
         if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTENSIONS
     )
 
-st.title("🧑‍💻 Register Face (Native)")
+st.title("🧑‍💻 Register Face (Native Live)")
 st.markdown("Collect face images for each employee to train the recognition model.")
 
 employees = get_all_employees()
@@ -87,84 +81,112 @@ with summary_col:
 
 st.divider()
 
-tab_camera, tab_upload = st.tabs(["📷 Camera Capture (Native)", "📁 Upload Images"])
+tab_camera, tab_upload = st.tabs(["📷 Camera Capture (Native Live)", "📁 Upload Images"])
 
-# --- TAB CAMERA CAPTURE (NATIVE) ---
+# --- TAB CAMERA CAPTURE (NATIVE LIVE) ---
 with tab_camera:
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 1.2])
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1.2, 1.2])
     with ctrl_col1:
         cam_idx = st.selectbox("Choose Camera", [0, 1], key=f"{PAGE_KEY}_camera_index")
     with ctrl_col2:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        run_camera = st.toggle("🎥 Bật Camera Preview", key=f"{PAGE_KEY}_run_camera")
+        st.caption("Camera Controls")
+        b_start_col, b_stop_col = st.columns(2)
+        with b_start_col:
+            if st.button("▶️ Bật Preview", type="primary", use_container_width=True):
+                st.session_state[f"{PAGE_KEY}_is_running"] = True
+        with b_stop_col:
+            if st.button("⏹️ Tắt", use_container_width=True):
+                st.session_state[f"{PAGE_KEY}_is_running"] = False
+                release_camera(st.session_state, PAGE_KEY)
+                st.rerun()
 
     previous_camera_index = st.session_state.get(f"{PAGE_KEY}_active_camera_index")
     if previous_camera_index != cam_idx:
         st.session_state[f"{PAGE_KEY}_active_camera_index"] = cam_idx
         release_camera(st.session_state, PAGE_KEY)
 
-    @st.fragment(run_every=camera_run_every)
-    def render_register_camera():
-        run_cam = st.session_state.get(f"{PAGE_KEY}_run_camera", False)
-        cam_index = st.session_state.get(f"{PAGE_KEY}_camera_index", 0)
+    cam_col, info_col = st.columns([1.5, 1], gap="large")
 
-        cam_col, info_col = st.columns([1.5, 1], gap="large")
+    with cam_col:
+        with st.container(border=True):
+            st.subheader("Live Preview (Native 30 FPS)")
+            video_placeholder = st.empty()
 
-        with cam_col:
-            with st.container(border=True):
-                st.subheader("Live Preview (Native)")
+    with info_col:
+        with st.container(border=True):
+            st.subheader("Capture Controls")
+            st.caption("1. Bật camera preview và nhìn thẳng.")
+            st.caption("2. Đảm bảo có đúng 1 khuôn mặt trong khung hình.")
+            st.caption("3. Bấm nút Chụp để lưu ảnh mẫu nhận diện.")
 
-                if not run_cam:
-                    release_camera(st.session_state, PAGE_KEY)
-                    st.info("Camera đang tắt. Bật 'Bật Camera Preview' để căn chỉnh khuôn mặt.")
+            capture_btn_placeholder = st.empty()
+            capture_status_placeholder = st.empty()
+
+    is_running = st.session_state.get(f"{PAGE_KEY}_is_running", False)
+
+    if not is_running:
+        video_placeholder.info("Camera đang tắt. Bấm **'▶️ Bật Preview'** để căn chỉnh khuôn mặt.")
+        capture_status_placeholder.info("Bật camera để kích hoạt nút chụp ảnh.")
+    else:
+        cap = get_or_create_camera(st.session_state, PAGE_KEY, cam_idx)
+        if cap is None or not cap.isOpened():
+            st.session_state[f"{PAGE_KEY}_is_running"] = False
+            release_camera(st.session_state, PAGE_KEY)
+            video_placeholder.error("Không thể mở thiết bị Camera.")
+        else:
+            frame_counter = 0
+            fps_start = time.time()
+
+            # Hiển thị nút chụp ảnh
+            do_capture = capture_btn_placeholder.button("📸 Chụp & Lưu khuôn mặt", type="primary", use_container_width=True)
+
+            while st.session_state.get(f"{PAGE_KEY}_is_running", False):
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    video_placeholder.warning("Đang chờ khung hình...")
+                    time.sleep(0.05)
+                    continue
+
+                frame_counter += 1
+                faces = update_detected_faces(st.session_state, PAGE_KEY, frame, detect_faces)
+                annotated = annotate_faces(frame, faces)
+
+                elapsed = time.time() - fps_start
+                fps = frame_counter / elapsed if elapsed > 0 else 0
+                cv2.putText(
+                    annotated,
+                    f"LIVE: {fps:.1f} FPS",
+                    (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 255, 0),
+                    2,
+                )
+
+                frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                video_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+
+                if len(faces) == 0:
+                    capture_status_placeholder.warning("⚠️ Không thấy mặt: Hãy đứng vào giữa khung hình.")
+                elif len(faces) > 1:
+                    capture_status_placeholder.warning("⚠️ Nhiều mặt: Chỉ để 1 người trong khung hình.")
                 else:
-                    cap = get_or_create_camera(st.session_state, PAGE_KEY, cam_index)
-                    if cap is None or not cap.isOpened():
-                        release_camera(st.session_state, PAGE_KEY)
-                        st.error("Không thể mở thiết bị Camera.")
+                    capture_status_placeholder.success("✅ Mặt sẵn sàng: Bấm 'Chụp & Lưu' để lưu mẫu.")
+
+                # Nếu người dùng bấm Chụp
+                if do_capture:
+                    if len(faces) == 1:
+                        face_crop = crop_and_resize_face(frame, faces[0])
+                        save_path = save_face_image(selected_employee_code, face_crop)
+                        st.toast(f"✅ Đã lưu ảnh thành công cho {selected_employee_code}!")
+                        time.sleep(0.5)
+                        st.rerun()
                     else:
-                        ret, frame = cap.read()
-                        if not ret or frame is None:
-                            release_camera(st.session_state, PAGE_KEY)
-                            st.error("Không thể đọc khung hình từ camera.")
-                        else:
-                            # Lưu frame gốc sạch vào session_state để dùng khi bấm nút Chụp
-                            st.session_state[f"{PAGE_KEY}_latest_clean_frame"] = frame.copy()
+                        st.toast("⚠️ Vui lòng đảm bảo có đúng 1 khuôn mặt trước khi bấm chụp!")
+                        time.sleep(0.5)
+                        st.rerun()
 
-                            faces = update_detected_faces(st.session_state, PAGE_KEY, frame, detect_faces)
-                            annotated = annotate_faces(frame, faces)
-
-                            frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                            st.image(frame_rgb, channels="RGB", use_container_width=True)
-
-        with info_col:
-            with st.container(border=True):
-                st.subheader("Capture Controls")
-                st.caption("1. Bật camera và nhìn thẳng vào ống kính.")
-                st.caption("2. Đảm bảo chỉ có 1 khuôn mặt trong khung hình.")
-                st.caption("3. Bấm nút Chụp để lưu mẫu nhận diện.")
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                capture_pressed = st.button("📸 Chụp & Lưu khuôn mặt", type="primary", use_container_width=True)
-
-                if capture_pressed:
-                    clean_frame = st.session_state.get(f"{PAGE_KEY}_latest_clean_frame")
-                    if not run_cam or clean_frame is None:
-                        st.toast("⚠️ Vui lòng bật camera preview trước khi chụp!")
-                    else:
-                        detected_faces, _ = detect_faces(clean_frame)
-                        if len(detected_faces) == 0:
-                            st.toast("⚠️ Không tìm thấy khuôn mặt trong ảnh! Vui lòng thử lại.")
-                        elif len(detected_faces) > 1:
-                            st.toast("⚠️ Phát hiện nhiều khuôn mặt! Hãy đảm bảo chỉ có 1 người trong khung hình.")
-                        else:
-                            x, y, w, h = detected_faces[0]
-                            face_crop = crop_and_resize_face(clean_frame, (x, y, w, h))
-                            save_path = save_face_image(selected_employee_code, face_crop)
-                            st.toast(f"✅ Đã lưu ảnh khuôn mặt cho nhân viên {selected_employee_code}!")
-                            st.rerun()
-
-    render_register_camera()
+                time.sleep(0.01)
 
 # --- TAB UPLOAD IMAGES ---
 with tab_upload:
