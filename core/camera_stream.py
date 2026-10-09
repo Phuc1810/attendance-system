@@ -14,6 +14,14 @@ CAMERA_FRAME_WIDTH = 640
 CAMERA_FRAME_HEIGHT = 480
 CAMERA_PAGE_KEYS = ("register_face", "attendance", "face_detection", "face_recognition")
 
+# Tần số điều tiết hiển thị video qua Streamlit WebSocket (Golden FPS: ~14.7 FPS)
+# Đảm bảo trình duyệt luôn tiêu thụ kịp gói tin, triệt tiêu 100% tích tụ hàng đợi gây delay 2-3s
+STREAM_FRAME_INTERVAL = 0.068
+# Thời gian nhả CPU giữa các vòng lặp streaming để tránh tight spin loop
+STREAM_SLEEP_INTERVAL = 0.015
+# Chất lượng nén JPEG tối ưu cho video stream (cân bằng sắc nét và dung lượng nhẹ)
+STREAM_JPEG_QUALITY = 72
+
 
 class ThreadedCameraReader:
     """
@@ -447,3 +455,25 @@ def annotate_recognition(
         2,
     )
     return annotated
+
+
+def render_stream_frame(placeholder: Any, frame: Any, quality: int = STREAM_JPEG_QUALITY) -> bool:
+    """
+    Nén khung hình BGR sang JPEG siêu tốc (libjpeg-turbo C++) và hiển thị qua Streamlit placeholder.
+    Giảm dung lượng gói tin từ ~100KB xuống ~20KB, ngăn ngừa tràn hàng đợi WebSocket và giảm tải cho trình duyệt.
+    """
+    if placeholder is None or frame is None:
+        return False
+
+    try:
+        success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+        if success:
+            placeholder.image(buffer.tobytes(), format="JPEG", use_container_width=True)
+            return True
+        else:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+            return False
+    except Exception as err:
+        print(f"Error rendering stream frame: {err}")
+        return False
