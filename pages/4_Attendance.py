@@ -5,10 +5,13 @@ import cv2
 import streamlit as st
 
 from core.camera_stream import (
+    STREAM_FRAME_INTERVAL,
+    STREAM_SLEEP_INTERVAL,
     get_or_create_camera,
     get_or_update_prediction,
     release_camera,
     release_inactive_cameras,
+    render_stream_frame,
     update_detected_faces,
 )
 from core.face_detect import detect_faces
@@ -379,11 +382,10 @@ else:
             else:
                 clear_tracking_state()
 
-            # Điều tiết hiển thị video để không làm tràn hàng đợi WebSocket (tránh tích tụ trễ 1-2s)
+            # Điều tiết hiển thị video Zero-Delay (Golden FPS ~14.7 FPS, Turbo-JPEG nhẹ ~20KB)
             now = time.time()
-            if now - last_video_time >= 0.035:  # Giới hạn ~25-28 FPS mượt mà
-                frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                video_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+            if now - last_video_time >= STREAM_FRAME_INTERVAL:
+                render_stream_frame(video_placeholder, annotated_frame)
                 last_video_time = now
 
             # Điều tiết cập nhật widget trạng thái: chỉ vẽ lại khi có kết quả mới, đổi số mặt, hoặc định kỳ 0.25s
@@ -489,4 +491,4 @@ else:
                 else:
                     latest_log_placeholder.empty()
 
-            time.sleep(0.005)
+            time.sleep(STREAM_SLEEP_INTERVAL)
