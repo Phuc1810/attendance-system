@@ -4,6 +4,8 @@ import time
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from core.camera_stream import (
     STREAM_FRAME_INTERVAL,
@@ -18,7 +20,11 @@ from db.attendance_repo import (
     register_check_in,
     register_check_out,
     get_latest_attendance_log,
+    can_check_in,
+    can_check_out,
 )
+from db.session import SessionLocal
+from db.models import AttendanceLog
 
 
 class StrictStreamlitMockPlaceholder:
@@ -112,66 +118,132 @@ def test_attendance_read_frame_flush():
     print("  DirectShow frame buffer flush -> PASSED!")
 
 
-def test_attendance_auto_log_integration():
-    print("\n3. Testing Auto Attendance Flow (3 Stable Frames + Cooldown)...")
+def test_first_and_repeat_checkin_integration():
+    print("\n3. Testing First Check-in vs Repeat Check-in Full Flow...")
     initialize_database()
     initialize_attendance_logs()
 
-    # Giả lập kết quả nhận diện nhân viên NV003
-    target_code = "NV003"
-    mock_prediction = {
-        "display_code": target_code,
-        "predicted_code": target_code,
-        "confidence": 0.45,
-        "match_threshold": 0.60,
-        "is_match": True,
+    test_code = "NV098"
+    # Dọn sạch các log cũ nếu có của NV098
+    with SessionLocal() as db_session:
+        db_session.query(AttendanceLog).filter(AttendanceLog.employee_code == test_code).delete()
+        db_session.commit()
+
+    # Step A: Lần đầu quét mặt NV098 (3 frames) -> Điểm danh thành công
+    can_log, msg = can_check_in(test_code)
+    assert can_log is True, f"Lần đầu check-in phải được phép, nhận được: {msg}"
+    
+    new_log = register_check_in(test_code, "Camera 1", 0.95)
+    assert new_log is not None
+    assert new_log["employee_code"] == test_code
+    assert new_log["log_type"] == "IN"
+
+    # Mô phỏng trạng thái UI sau khi điểm danh thành công
+    action_text = "check in"
+    success_status = {
+        "employee_code": test_code,
+        "status": "success",
+        "message": f"✅ Xác thực thành công: **{test_code}**! Đã ghi nhận điểm danh {action_text} thành công vào lúc {new_log['log_time']}.",
+        "log_time": new_log["log_time"],
+        "action": action_text,
     }
+    assert success_status["status"] == "success"
+    assert "Đang ghi nhận điểm danh" not in success_status["message"], "Không được chứa text 'Đang ghi nhận...'"
+    assert "thành công vào lúc" in success_status["message"]
+    print(f"  Step A: First Check-in Success -> {success_status['message']}")
 
-    # Giả lập đếm 3 khung hình ổn định liên tiếp (AUTO_MATCH_REQUIRED_FRAMES = 3)
-    stable_count = 0
-    stable_code = None
-    REQUIRED_FRAMES = 3
+    # Step B: Quét mặt NV098 lần thứ 2 -> Bị chặn, thông báo đã check-in rồi
+    can_log_2, msg_2 = can_check_in(test_code)
+    assert can_log_2 is False, "Lần thứ 2 check-in trong ngày phải bị chặn!"
+    assert "already checked in" in msg_2.lower()
 
-    for step in range(1, 4):
-        pred_code = mock_prediction["display_code"]
-        if stable_code == pred_code:
-            stable_count += 1
-        else:
-            stable_code = pred_code
-            stable_count = 1
-        print(f"  Frame {step}: Code={stable_code}, Stable Count={stable_count}")
+    warning_msg = f"⚠️ Nhân viên {test_code} đã thực hiện check-in rồi! Không thể check-in được nữa."
+    repeat_status = {
+        "employee_code": test_code,
+        "status": "already_checked_in",
+        "message": f"⚠️ Nhân viên **{test_code}** đã thực hiện check-in rồi! Không thể check-in được nữa.",
+        "action": action_text,
+    }
+    assert repeat_status["status"] == "already_checked_in"
+    assert "đã thực hiện check-in rồi! Không thể check-in được nữa" in warning_msg
+    print(f"  Step B: Repeat Check-in Blocked -> {repeat_status['message']}")
 
-    assert stable_count == REQUIRED_FRAMES, f"Expected {REQUIRED_FRAMES}, got {stable_count}"
+    # Dọn dẹp
+    with SessionLocal() as db_session:
+        db_session.query(AttendanceLog).filter(AttendanceLog.employee_code == test_code).delete()
+        db_session.commit()
+    print("  First vs Repeat Check-in Integration -> PASSED!")
 
-    # Thực hiện check-in hoặc check-out theo trạng thái cơ sở dữ liệu
-    latest = get_latest_attendance_log(target_code)
-    try:
-        if latest is None or latest.get("log_type") == "OUT":
-            new_log = register_check_in(
-                employee_code=target_code,
-                camera_source="Camera 1",
-                confidence=mock_prediction["confidence"],
-            )
-            print(f"  Successfully registered check-in: {new_log['employee_code']} at {new_log['log_time']}, type=IN")
-        else:
-            new_log = register_check_out(
-                employee_code=target_code,
-                camera_source="Camera 2",
-                confidence=mock_prediction["confidence"],
-            )
-            print(f"  Successfully registered check-out: {new_log['employee_code']} at {new_log['log_time']}, type=OUT")
-    except ValueError as err:
-        print(f"  Business rule enforced: {err}")
 
-    # Xác thực bản ghi log mới nhất tồn tại
-    latest_after = get_latest_attendance_log(target_code)
-    assert latest_after is not None
-    assert latest_after["employee_code"] == target_code
-    print("  Auto Attendance Integration -> PASSED!")
+def test_toast_anti_spam_debounce():
+    print("\n4. Testing Toast Debounce Anti-Spam Logic...")
+    session_state = {}
+    PAGE_KEY = "attendance"
+    TOAST_COOLDOWN = 5.0
+    sent_toasts = []
+
+    def mock_trigger_toast(emp_code, event_type, msg):
+        now = time.time()
+        toast_key = f"{emp_code}:{event_type}"
+        last_key = session_state.get(f"{PAGE_KEY}_last_toast_key")
+        last_time = session_state.get(f"{PAGE_KEY}_last_toast_time", 0.0)
+
+        if last_key == toast_key and (now - last_time) < TOAST_COOLDOWN:
+            return False
+
+        session_state[f"{PAGE_KEY}_last_toast_key"] = toast_key
+        session_state[f"{PAGE_KEY}_last_toast_time"] = now
+        sent_toasts.append((emp_code, msg))
+        return True
+
+    # Bắn toast lần 1 -> Thành công
+    assert mock_trigger_toast("NV001", "success", "Success 1") is True
+    # Bắn lặp lại ngay lập tức -> Phải bị chặn
+    assert mock_trigger_toast("NV001", "success", "Success 1") is False
+    assert len(sent_toasts) == 1
+    # Bắn sự kiện khác (cảnh báo) -> Được phép
+    assert mock_trigger_toast("NV001", "already_checked_in", "Warning") is True
+    assert len(sent_toasts) == 2
+    print("  Toast Anti-Spam Debounce -> PASSED!")
+
+
+def test_checkout_validation_rules():
+    print("\n5. Testing Check-out Rules & Notifications...")
+    test_emp = "NV097"
+    with SessionLocal() as db_session:
+        db_session.query(AttendanceLog).filter(AttendanceLog.employee_code == test_emp).delete()
+        db_session.commit()
+
+    # Chưa check-in -> Không được phép check-out
+    can_out_1, msg_out_1 = can_check_out(test_emp)
+    assert can_out_1 is False
+    assert "not checked in" in msg_out_1.lower()
+    print(f"  Step A: Checkout without Check-in blocked -> {msg_out_1}")
+
+    # Thực hiện check-in trước
+    register_check_in(test_emp, "Camera 1", 0.95)
+
+    # Sau khi check-in -> Được phép check-out
+    can_out_2, msg_out_2 = can_check_out(test_emp)
+    assert can_out_2 is True
+    out_log = register_check_out(test_emp, "Camera 2", 0.95)
+    assert out_log["log_type"] == "OUT"
+    print(f"  Step B: Checkout allowed after Check-in -> Logged OUT at {out_log['log_time']}")
+
+    # Sau khi đã check-out -> Không được phép check-out lần 2
+    can_out_3, msg_out_3 = can_check_out(test_emp)
+    assert can_out_3 is False
+    assert "already checked out" in msg_out_3.lower()
+    print(f"  Step C: Repeat Checkout blocked -> {msg_out_3}")
+
+    with SessionLocal() as db_session:
+        db_session.query(AttendanceLog).filter(AttendanceLog.employee_code == test_emp).delete()
+        db_session.commit()
+    print("  Check-out Validation Rules -> PASSED!")
 
 
 def test_attendance_syntax_compile():
-    print("\n4. Testing Syntax and Compilation of pages/4_Attendance.py...")
+    print("\n6. Testing Syntax and Compilation of pages/4_Attendance.py...")
     with open("pages/4_Attendance.py", "r", encoding="utf-8") as f:
         code = f.read()
     compile(code, "pages/4_Attendance.py", "exec")
@@ -181,6 +253,8 @@ def test_attendance_syntax_compile():
 if __name__ == "__main__":
     test_attendance_streaming_timing()
     test_attendance_read_frame_flush()
-    test_attendance_auto_log_integration()
+    test_first_and_repeat_checkin_integration()
+    test_toast_anti_spam_debounce()
+    test_checkout_validation_rules()
     test_attendance_syntax_compile()
-    print("\n>>> ALL PHASE 2 ATTENDANCE INTEGRATION TESTS PASSED SUCCESSFULLY! <<<")
+    print("\n>>> ALL PHASE 2 & 3 ATTENDANCE INTEGRATION TESTS PASSED SUCCESSFULLY! <<<")

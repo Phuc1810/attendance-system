@@ -19,6 +19,8 @@ from core.face_detect import detect_faces
 from core.face_recognizer import predict_face
 from core.save_face import crop_and_resize_face
 from db.attendance_repo import (
+    can_check_in,
+    can_check_out,
     get_latest_attendance_log,
     initialize_attendance_logs,
     register_check_in,
@@ -96,6 +98,26 @@ def create_attendance_from_camera(employee_code, confidence, camera_index):
         camera_source=camera_config["camera_source"],
         confidence=confidence,
     )
+
+TOAST_COOLDOWN_SECONDS = 5.0
+
+def trigger_attendance_toast(employee_code: str, event_type: str, message: str, icon: str = "ℹ️") -> bool:
+    """
+    Kích hoạt thông báo st.toast trực tiếp ngay trong vòng lặp live camera.
+    Tích hợp debounce cooldown để chống spam toast khi người dùng đứng yên trước camera.
+    """
+    now = time.time()
+    toast_key = f"{employee_code}:{event_type}"
+    last_key = st.session_state.get(f"{PAGE_KEY}_last_toast_key")
+    last_time = st.session_state.get(f"{PAGE_KEY}_last_toast_time", 0.0)
+
+    if last_key == toast_key and (now - last_time) < TOAST_COOLDOWN_SECONDS:
+        return False
+
+    st.session_state[f"{PAGE_KEY}_last_toast_key"] = toast_key
+    st.session_state[f"{PAGE_KEY}_last_toast_time"] = now
+    st.toast(message, icon=icon)
+    return True
 
 def set_attendance_notice(level, title, message, duration_seconds=NOTICE_DURATION_SECONDS):
     st.session_state[f"{PAGE_KEY}_notice"] = {
@@ -183,18 +205,60 @@ def attempt_auto_attendance(camera_config, selected_camera_idx):
         return
 
     mark_recent_attempt(recognized_code, camera_config)
-    cooldown_remaining = get_log_cooldown_remaining(recognized_code, camera_config)
+    log_type = camera_config["log_type"]
     action_text = get_action_text(camera_config)
 
+    # --- KIỂM TRA ĐIỀU KIỆN ĐIỂM DANH (BUSINESS RULES) ---
+    if log_type == "IN":
+        can_log, msg = can_check_in(recognized_code)
+        if not can_log:
+            warning_msg = f"⚠️ Nhân viên {recognized_code} đã thực hiện check-in rồi! Không thể check-in được nữa."
+            trigger_attendance_toast(recognized_code, "already_checked_in", warning_msg, icon="⚠️")
+            st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+                "employee_code": recognized_code,
+                "status": "already_checked_in",
+                "message": f"⚠️ Nhân viên **{recognized_code}** đã thực hiện check-in rồi! Không thể check-in được nữa.",
+                "action": action_text,
+            }
+            reset_stability_state()
+            return
+    else:
+        # log_type == "OUT"
+        can_log, msg = can_check_out(recognized_code)
+        if not can_log:
+            if "not checked in" in msg.lower():
+                warning_msg = f"⚠️ Nhân viên {recognized_code} chưa thực hiện check-in hôm nay! Không thể check-out."
+                ui_status = "not_checked_in"
+                ui_msg = f"⚠️ Nhân viên **{recognized_code}** chưa thực hiện check-in hôm nay! Không thể check-out."
+            else:
+                warning_msg = f"⚠️ Nhân viên {recognized_code} đã thực hiện check-out rồi! Không thể check-out được nữa."
+                ui_status = "already_checked_out"
+                ui_msg = f"⚠️ Nhân viên **{recognized_code}** đã thực hiện check-out rồi! Không thể check-out được nữa."
+            trigger_attendance_toast(recognized_code, ui_status, warning_msg, icon="⚠️")
+            st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+                "employee_code": recognized_code,
+                "status": ui_status,
+                "message": ui_msg,
+                "action": action_text,
+            }
+            reset_stability_state()
+            return
+
+    # Kiểm tra cooldown giữa 2 lần thao tác liên tiếp
+    cooldown_remaining = get_log_cooldown_remaining(recognized_code, camera_config)
     if cooldown_remaining > 0:
-        set_attendance_notice(
-            "warning",
-            "Cooldown Active",
-            f"A recent {action_text} for {recognized_code} was recorded. Wait {cooldown_remaining}s.",
-        )
+        info_msg = f"Vừa ghi nhận {action_text} cho {recognized_code}. Vui lòng chờ {cooldown_remaining}s."
+        trigger_attendance_toast(recognized_code, "cooldown", f"ℹ️ {info_msg}", icon="ℹ️")
+        st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+            "employee_code": recognized_code,
+            "status": "cooldown",
+            "message": f"ℹ️ Vừa ghi nhận {action_text} cho **{recognized_code}**. Vui lòng chờ {cooldown_remaining}s.",
+            "action": action_text,
+        }
         reset_stability_state()
         return
 
+    # Thực hiện ghi nhận điểm danh vào SQLite
     try:
         new_log = create_attendance_from_camera(
             employee_code=recognized_code,
@@ -202,17 +266,24 @@ def attempt_auto_attendance(camera_config, selected_camera_idx):
             camera_index=selected_camera_idx,
         )
         st.session_state[f"{PAGE_KEY}_latest_success_log"] = new_log
-        set_attendance_notice(
-            "success",
-            "Attendance Logged",
-            f"{new_log['employee_code']} {action_text} successful at {new_log['log_time']}.",
-        )
+        success_toast = f"✅ Xác thực thành công: {new_log['employee_code']}! Đã ghi nhận điểm danh {action_text} lúc {new_log['log_time']}."
+        trigger_attendance_toast(recognized_code, "success", success_toast, icon="✅")
+        st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+            "employee_code": recognized_code,
+            "status": "success",
+            "message": f"✅ Xác thực thành công: **{new_log['employee_code']}**! Đã ghi nhận điểm danh {action_text} thành công vào lúc {new_log['log_time']}.",
+            "log_time": new_log["log_time"],
+            "action": action_text,
+        }
     except ValueError as error:
-        set_attendance_notice(
-            "warning",
-            "Attendance Blocked",
-            str(error),
-        )
+        error_msg = f"⚠️ Không thể điểm danh: {error}"
+        trigger_attendance_toast(recognized_code, "error", error_msg, icon="⚠️")
+        st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+            "employee_code": recognized_code,
+            "status": "error",
+            "message": error_msg,
+            "action": action_text,
+        }
     finally:
         reset_stability_state()
 
@@ -240,6 +311,9 @@ with control_col_2:
             st.session_state[f"{PAGE_KEY}_is_running"] = False
             release_camera(st.session_state, PAGE_KEY)
             clear_tracking_state()
+            st.session_state.pop(f"{PAGE_KEY}_last_attendance_status", None)
+            st.session_state.pop(f"{PAGE_KEY}_last_toast_key", None)
+            st.session_state.pop(f"{PAGE_KEY}_last_toast_time", None)
             st.rerun()
 
 with control_col_3:
@@ -254,6 +328,9 @@ if previous_camera_index != selected_camera_index:
     release_camera(st.session_state, PAGE_KEY)
     clear_tracking_state()
     clear_attendance_notice()
+    st.session_state.pop(f"{PAGE_KEY}_last_attendance_status", None)
+    st.session_state.pop(f"{PAGE_KEY}_last_toast_key", None)
+    st.session_state.pop(f"{PAGE_KEY}_last_toast_time", None)
 
 st.divider()
 
@@ -294,6 +371,7 @@ else:
         last_rendered_pred_code = None
         last_rendered_pred_match = None
         last_rendered_cnt = -1
+        last_rendered_status_key = None
 
         # Vòng lặp phát video trực tiếp mượt mà liên tục (Live Loop)
         while st.session_state.get(f"{PAGE_KEY}_is_running", False):
@@ -393,6 +471,8 @@ else:
             stable_cnt = st.session_state.get(f"{PAGE_KEY}_stable_frame_count", 0)
             pred_code = prediction.get("display_code") if prediction else None
             pred_match = prediction.get("is_match") if prediction else None
+            current_status = st.session_state.get(f"{PAGE_KEY}_last_attendance_status")
+            status_key = (current_status.get("employee_code"), current_status.get("status")) if current_status else None
 
             ui_needed = (
                 is_new_prediction
@@ -401,6 +481,7 @@ else:
                 or pred_code != last_rendered_pred_code
                 or pred_match != last_rendered_pred_match
                 or stable_cnt != last_rendered_cnt
+                or status_key != last_rendered_status_key
                 or (now - last_ui_time >= 0.25)
             )
 
@@ -411,6 +492,7 @@ else:
                 last_rendered_pred_code = pred_code
                 last_rendered_pred_match = pred_match
                 last_rendered_cnt = stable_cnt
+                last_rendered_status_key = status_key
 
                 with status_card_placeholder.container(border=True):
                     st.subheader("Recognition Status")
@@ -455,16 +537,37 @@ else:
                         )
                     else:
                         # Khớp nhân viên hợp lệ (Target Locked)
-                        disp_cnt = min(stable_cnt, AUTO_MATCH_REQUIRED_FRAMES)
-                        st.markdown(f"**🎯 Target Locked: {rec_code}**")
-                        st.progress(
-                            min(stable_cnt / AUTO_MATCH_REQUIRED_FRAMES, 1.0),
-                            text=f"Stabilizing... ({disp_cnt} / {AUTO_MATCH_REQUIRED_FRAMES} frames)",
-                        )
-                        if stable_cnt >= AUTO_MATCH_REQUIRED_FRAMES:
-                            st.success(f"✅ Xác thực thành công: **{rec_code}**! Đang ghi nhận điểm danh...")
+                        last_status = st.session_state.get(f"{PAGE_KEY}_last_attendance_status")
+
+                        if last_status and last_status.get("employee_code") == rec_code:
+                            status_type = last_status.get("status")
+                            st.markdown(f"**🎯 Target Locked: {rec_code}**")
+
+                            if status_type == "success":
+                                st.progress(1.0, text="Điểm danh hoàn tất (3 / 3 frames)")
+                                st.success(last_status.get("message", f"✅ Xác thực thành công: **{rec_code}**!"))
+                            elif status_type == "already_checked_in":
+                                st.progress(1.0, text="Đã kiểm tra trạng thái (3 / 3 frames)")
+                                st.warning(last_status.get("message", f"⚠️ Nhân viên **{rec_code}** đã thực hiện check-in rồi! Không thể check-in được nữa."))
+                            elif status_type in ("already_checked_out", "not_checked_in"):
+                                st.progress(1.0, text="Đã kiểm tra trạng thái (3 / 3 frames)")
+                                st.warning(last_status.get("message", "⚠️ Thao tác check-out không hợp lệ."))
+                            elif status_type == "cooldown":
+                                st.progress(1.0, text="Đang trong thời gian chờ (3 / 3 frames)")
+                                st.info(last_status.get("message", "Vui lòng chờ một chút."))
+                            else:
+                                st.error(last_status.get("message", "Lỗi điểm danh."))
                         else:
-                            st.info(f"Giữ yên mặt thêm {AUTO_MATCH_REQUIRED_FRAMES - stable_cnt} frame...")
+                            disp_cnt = min(stable_cnt, AUTO_MATCH_REQUIRED_FRAMES)
+                            st.markdown(f"**🎯 Target Locked: {rec_code}**")
+                            st.progress(
+                                min(stable_cnt / AUTO_MATCH_REQUIRED_FRAMES, 1.0),
+                                text=f"Stabilizing... ({disp_cnt} / {AUTO_MATCH_REQUIRED_FRAMES} frames)",
+                            )
+                            if stable_cnt >= AUTO_MATCH_REQUIRED_FRAMES:
+                                st.info(f"⏳ Đang xử lý điểm danh cho **{rec_code}**...")
+                            else:
+                                st.info(f"Giữ yên mặt thêm {AUTO_MATCH_REQUIRED_FRAMES - stable_cnt} frame để xác nhận...")
 
                 # Hiển thị thẻ log điểm danh mới nhất hoặc thông tin nhân viên vừa quét
                 latest_log = st.session_state.get(f"{PAGE_KEY}_latest_success_log")
