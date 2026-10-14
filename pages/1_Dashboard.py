@@ -21,20 +21,6 @@ initialize_database()
 initialize_attendance_logs()
 release_inactive_cameras(st.session_state)
 
-# --- SIDEBAR FILTERS ---
-st.sidebar.title("🔍 Search & Filters")
-employee_code_options = ["All"] + get_employee_codes()
-selected_employee_code = st.sidebar.selectbox(
-    "Employee Code",
-    options=employee_code_options,
-    help="Select an employee code to filter the dashboard.",
-)
-filter_type = st.sidebar.multiselect(
-    "Filter Type",
-    options=["IN", "OUT"],
-    default=["IN", "OUT"],
-)
-
 # --- DATA FETCHING ---
 employees_df = get_employee_dataframe()
 today_attendance_df = get_today_attendance_dataframe()
@@ -62,13 +48,6 @@ if not today_display_df.empty:
             "confidence": "Confidence",
         }
     )
-
-    if selected_employee_code != "All":
-        today_display_df = today_display_df[
-            today_display_df["Employee Code"] == selected_employee_code
-        ]
-
-    today_display_df = today_display_df[today_display_df["Type"].isin(filter_type)]
 
 # Plotly data processing for 7 days
 last_7_days = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
@@ -144,11 +123,40 @@ with content_col:
 
     with st.container(border=True):
         st.subheader("📋 Today's Attendance List")
-        if today_display_df.empty:
-            st.info("No records found.")
+        
+        # In-page Filter Bar: Lọc trực tiếp ngay trên bảng dữ liệu, không làm rối sidebar
+        employee_code_options = ["All"] + get_employee_codes()
+        filter_col_emp, filter_col_type = st.columns([1.2, 1])
+        with filter_col_emp:
+            selected_employee_code = st.selectbox(
+                "Filter by Employee",
+                options=employee_code_options,
+                label_visibility="collapsed",
+                help="Filter today attendance by specific employee",
+            )
+        with filter_col_type:
+            filter_type = st.multiselect(
+                "Filter Type",
+                options=["IN", "OUT"],
+                default=["IN", "OUT"],
+                label_visibility="collapsed",
+                placeholder="Log Type (IN/OUT)",
+            )
+
+        filtered_today_df = today_display_df.copy()
+        if not filtered_today_df.empty:
+            if selected_employee_code != "All":
+                filtered_today_df = filtered_today_df[
+                    filtered_today_df["Employee Code"] == selected_employee_code
+                ]
+            if filter_type:
+                filtered_today_df = filtered_today_df[filtered_today_df["Type"].isin(filter_type)]
+
+        if filtered_today_df.empty:
+            st.info("No matching records found.")
         else:
             st.dataframe(
-                today_display_df,
+                filtered_today_df,
                 use_container_width=True, 
                 height=300,
                 hide_index=True,

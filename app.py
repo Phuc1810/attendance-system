@@ -11,7 +11,7 @@ initialize_database()
 initialize_attendance_logs()
 
 st.sidebar.title("🏢 Smart Attendance")
-st.sidebar.caption("Powered by Face Recognition AI")
+st.sidebar.caption("Enterprise Face Recognition System")
 
 pages = {
     "Quản lý (Management)": [
@@ -19,13 +19,11 @@ pages = {
         st.Page("pages/2_Employees.py", title="Employees", icon="👥"),
         st.Page("pages/5_History.py", title="History", icon="🕒"),
     ],
-    "Nhận diện (Face AI)": [
+    "Nhận diện AI (AI Recognition)": [
         st.Page("pages/4_Attendance.py", title="Check-in Camera", icon="📷"),
         st.Page("pages/3_Register_Face.py", title="Register Face", icon="🧑‍💻"),
-    ],
-    "Kiểm thử (System Testing)": [
-        st.Page("pages/6_Face_Detection.py", title="Face Detection", icon="🔍"),
-        st.Page("pages/7_Face_Recognition.py", title="Face Recognition", icon="🤖"),
+        st.Page("pages/6_Face_Detection.py", title="Face Detection (Test)", icon="🔍"),
+        st.Page("pages/7_Face_Recognition.py", title="Face Recognition (Test)", icon="🎯"),
     ],
 }
 
