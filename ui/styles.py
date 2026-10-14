@@ -34,6 +34,54 @@ def apply_custom_css():
             transform: scale(1.05);
         }
         
+        /* ==================================================== */
+        /* GLOBAL TYPOGRAPHY STANDARDIZATION                    */
+        /* ==================================================== */
+        html, body, [class*="css"], [data-testid="stAppViewContainer"] {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+            color: #0F172A;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Standardize H1: Main Page Titles */
+        h1, [data-testid="stHeader"] h1, .stHeadingContainer h1 {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            font-size: 2.0rem !important;
+            font-weight: 700 !important;
+            color: #0F172A !important;
+            letter-spacing: -0.025em !important;
+            line-height: 1.25 !important;
+            margin-bottom: 0.25rem !important;
+        }
+
+        /* Standardize H2 & H3: Section Titles */
+        h2, h3, [data-testid="stHeader"] h2, [data-testid="stHeader"] h3,
+        .stHeadingContainer h2, .stHeadingContainer h3 {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            font-size: 1.25rem !important;
+            font-weight: 600 !important;
+            color: #1E3A8A !important;
+            letter-spacing: -0.015em !important;
+            line-height: 1.35 !important;
+            margin-top: 0.5rem !important;
+            margin-bottom: 0.5rem !important;
+        }
+
+        /* Standardize Subtitles & Secondary Descriptions */
+        .stMarkdown p {
+            font-size: 0.95rem;
+            color: #334155;
+            line-height: 1.5;
+        }
+
+        /* Captions and subtext */
+        .stCaption, [data-testid="stCaptionContainer"] {
+            font-size: 0.88rem !important;
+            color: #64748B !important;
+            line-height: 1.4 !important;
+        }
+        
         /* Add comfortable top padding */
         .block-container {
             padding-top: 3.5rem;
@@ -95,11 +143,41 @@ def apply_custom_css():
             margin-top: 0.25rem;
         }
         
-        /* Dataframe styling */
+        /* ==================================================== */
+        /* CONTAINER, CARDS & SPACING STANDARDIZATION           */
+        /* ==================================================== */
+        /* Standardize st.container(border=True) wrappers */
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 12px !important;
+            border: 1px solid #E2E8F0 !important;
+            background-color: #FFFFFF !important;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px 0 rgba(0, 0, 0, 0.02) !important;
+            transition: box-shadow 0.2s ease, border-color 0.2s ease !important;
+        }
+
+        [data-testid="stVerticalBlockBorderWrapper"]:hover {
+            border-color: #CBD5E1 !important;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -1px rgba(0, 0, 0, 0.03) !important;
+        }
+
+        /* Standardize internal padding for border containers */
+        [data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
+            padding: 1.25rem 1.5rem !important;
+        }
+
+        /* Clean Enterprise Dividers (hr / st.divider) */
+        hr, [data-testid="stDivider"] {
+            border: none !important;
+            border-top: 1px solid #E2E8F0 !important;
+            margin: 1.25rem 0 !important;
+        }
+
+        /* Clean Enterprise Dataframe Styling */
         [data-testid="stDataFrame"] {
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+            border-radius: 10px !important;
+            overflow: hidden !important;
+            border: 1px solid #E2E8F0 !important;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04) !important;
         }
 
         /* ==================================================== */

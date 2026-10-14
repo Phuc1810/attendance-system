@@ -133,7 +133,7 @@ with st.container(border=True):
     else:
         # Applying styling via dataframe column_config
         def style_type(val):
-            color = "#2ecc71" if val == "IN" else "#e67e22"
+            color = "#10B981" if val == "IN" else "#F59E0B"
             return f"color: {color}; font-weight: bold"
             
         styled_df = display_history_df.style.map(style_type, subset=["Type"])

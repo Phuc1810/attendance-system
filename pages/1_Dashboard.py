@@ -137,7 +137,7 @@ with content_col:
             y="Count", 
             color="Type", 
             barmode="group",
-            color_discrete_map={"Check In (IN)": "#2ecc71", "Check Out (OUT)": "#e67e22"},
+            color_discrete_map={"Check In (IN)": "#10B981", "Check Out (OUT)": "#F59E0B"},
             labels={"Count": "Number of Logs"}
         )
         fig.update_layout(
