@@ -4,13 +4,39 @@ def apply_custom_css():
     st.markdown(
         """
         <style>
-        /* Hide default Streamlit header and footer */
-        header {visibility: hidden;}
+        /* Keep sidebar toggle button visible while hiding Streamlit default menu/footer */
         footer {visibility: hidden;}
+        #MainMenu {visibility: hidden;}
+        .stDeployButton {display: none;}
         
-        /* Add some top padding since header is hidden */
+        /* Make header container transparent and non-blocking, but keep sidebar collapse button active */
+        header[data-testid="stHeader"] {
+            background-color: transparent !important;
+        }
+        
+        /* Always show the toggle button to open sidebar when collapsed */
+        [data-testid="stSidebarCollapsedControl"] {
+            visibility: visible !important;
+            display: flex !important;
+            color: #1E3A8A !important;
+            background-color: #FFFFFF !important;
+            border-radius: 8px !important;
+            border: 1px solid #E2E8F0 !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+            top: 1rem !important;
+            left: 1rem !important;
+            transition: all 0.2s ease !important;
+        }
+
+        [data-testid="stSidebarCollapsedControl"]:hover {
+            background-color: #F1F5F9 !important;
+            border-color: #CBD5E1 !important;
+            transform: scale(1.05);
+        }
+        
+        /* Add comfortable top padding */
         .block-container {
-            padding-top: 2rem;
+            padding-top: 3.5rem;
             padding-bottom: 2rem;
         }
         
@@ -25,13 +51,48 @@ def apply_custom_css():
             transform: translateY(-1px);
         }
         
-        /* Metric cards styling */
+        /* Metric cards styling: Uniform height, rounded-xl (14px), soft multi-layer shadow */
         [data-testid="stMetric"] {
             background-color: #FFFFFF;
-            border-radius: 8px;
-            padding: 15px;
-            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            border-radius: 14px;
+            padding: 1.15rem 1.25rem;
+            min-height: 110px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
             border: 1px solid #E2E8F0;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        [data-testid="stMetric"]:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+            border-color: #CBD5E1;
+            transform: translateY(-2px);
+        }
+
+        /* Metric label typography */
+        [data-testid="stMetricLabel"] {
+            font-size: 0.88rem !important;
+            font-weight: 600 !important;
+            color: #64748B !important;
+            letter-spacing: -0.01em;
+            margin-bottom: 0.25rem;
+        }
+
+        /* Metric value typography */
+        [data-testid="stMetricValue"] {
+            font-size: 1.85rem !important;
+            font-weight: 700 !important;
+            color: #0F172A !important;
+            line-height: 1.2;
+        }
+
+        /* Metric delta badge styling */
+        [data-testid="stMetricDelta"] {
+            font-size: 0.82rem !important;
+            font-weight: 500 !important;
+            margin-top: 0.25rem;
         }
         
         /* Dataframe styling */
