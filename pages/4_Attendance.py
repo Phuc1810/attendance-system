@@ -1,22 +1,26 @@
-﻿from datetime import datetime, timedelta
+from datetime import datetime, timedelta
 import math
-
+import time
 import cv2
 import streamlit as st
 
-st.set_page_config(page_title="Attendance Dashboard", layout="wide")
-
 from core.camera_stream import (
+    STREAM_FRAME_INTERVAL,
+    STREAM_SLEEP_INTERVAL,
     get_or_create_camera,
     get_or_update_prediction,
+    read_camera_frame,
     release_camera,
     release_inactive_cameras,
+    render_stream_frame,
     update_detected_faces,
 )
 from core.face_detect import detect_faces
 from core.face_recognizer import predict_face
 from core.save_face import crop_and_resize_face
 from db.attendance_repo import (
+    can_check_in,
+    can_check_out,
     get_latest_attendance_log,
     initialize_attendance_logs,
     register_check_in,
@@ -25,25 +29,24 @@ from db.attendance_repo import (
 from db.database import initialize_database
 
 PAGE_KEY = "attendance"
-CAMERA_INTERVAL_SECONDS = 0.15
-RECOGNITION_PADDING_RATIO = 0.0
-AUTO_MATCH_REQUIRED_FRAMES = 8
+RECOGNITION_PADDING_RATIO = 0.18
+AUTO_MATCH_REQUIRED_FRAMES = 3
 AUTO_ACTION_COOLDOWN_SECONDS = 30
 AUTO_RETRY_COOLDOWN_SECONDS = 15
 NOTICE_DURATION_SECONDS = 5
 
 CAMERA_CONFIGS = {
     0: {
-        "title": "Laptop Camera - Check In",
-        "camera_source": "Laptop Camera",
+        "title": "Camera 1 (IN) 📥",
+        "camera_source": "Camera 1",
         "log_type": "IN",
-        "description": "Camera 0 is dedicated to automatic check-in.",
+        "description": "Camera 1 is dedicated to automatic check-in.",
     },
     1: {
-        "title": "Rappo C200 - Check Out",
-        "camera_source": "Rappo C200",
+        "title": "Camera 2 (OUT) 📤",
+        "camera_source": "Camera 2",
         "log_type": "OUT",
-        "description": "Camera 1 is dedicated to automatic check-out.",
+        "description": "Camera 2 is dedicated to automatic check-out.",
     },
 }
 
@@ -56,139 +59,120 @@ NOTICE_ICONS = {
 initialize_database()
 initialize_attendance_logs()
 
-if f"{PAGE_KEY}_run_camera" not in st.session_state:
-    st.session_state[f"{PAGE_KEY}_run_camera"] = False
+if f"{PAGE_KEY}_is_running" not in st.session_state:
+    st.session_state[f"{PAGE_KEY}_is_running"] = False
 
 release_inactive_cameras(st.session_state, PAGE_KEY)
 
-camera_run_every = (
-    CAMERA_INTERVAL_SECONDS
-    if st.session_state.get(f"{PAGE_KEY}_run_camera", False)
-    else None
-)
-
-st.title("Attendance")
-
-
+st.title("📷 Face Attendance Camera (Native Live)")
+st.markdown("Automatic Check-in/Check-out via high-performance Native OpenCV Camera.")
 
 def clear_recognized_employee_state():
     st.session_state[f"{PAGE_KEY}_recognized_employee_code"] = None
     st.session_state[f"{PAGE_KEY}_recognized_confidence"] = None
     st.session_state[f"{PAGE_KEY}_recognized_threshold"] = None
 
-
 def reset_stability_state():
     st.session_state[f"{PAGE_KEY}_stable_employee_code"] = None
     st.session_state[f"{PAGE_KEY}_stable_frame_count"] = 0
 
-
 def clear_attendance_notice():
     st.session_state.pop(f"{PAGE_KEY}_notice", None)
-
 
 def get_camera_config(camera_index):
     return CAMERA_CONFIGS.get(camera_index, CAMERA_CONFIGS[0])
 
-
 def get_action_text(camera_config):
     return "check in" if camera_config["log_type"] == "IN" else "check out"
 
-
 def create_attendance_from_camera(employee_code, confidence, camera_index):
     camera_config = get_camera_config(camera_index)
-
     if camera_config["log_type"] == "IN":
         return register_check_in(
             employee_code=employee_code,
             camera_source=camera_config["camera_source"],
             confidence=confidence,
         )
-
     return register_check_out(
         employee_code=employee_code,
         camera_source=camera_config["camera_source"],
         confidence=confidence,
     )
 
+TOAST_COOLDOWN_SECONDS = 5.0
+
+def trigger_attendance_toast(employee_code: str, event_type: str, message: str, icon: str = "ℹ️") -> bool:
+    """
+    Kích hoạt thông báo st.toast trực tiếp ngay trong vòng lặp live camera.
+    Tích hợp debounce cooldown để chống spam toast khi người dùng đứng yên trước camera.
+    """
+    now = time.time()
+    toast_key = f"{employee_code}:{event_type}"
+    last_key = st.session_state.get(f"{PAGE_KEY}_last_toast_key")
+    last_time = st.session_state.get(f"{PAGE_KEY}_last_toast_time", 0.0)
+
+    if last_key == toast_key and (now - last_time) < TOAST_COOLDOWN_SECONDS:
+        return False
+
+    st.session_state[f"{PAGE_KEY}_last_toast_key"] = toast_key
+    st.session_state[f"{PAGE_KEY}_last_toast_time"] = now
+    st.toast(message, icon=icon)
+    return True
 
 def set_attendance_notice(level, title, message, duration_seconds=NOTICE_DURATION_SECONDS):
     st.session_state[f"{PAGE_KEY}_notice"] = {
         "level": level,
         "title": title,
         "message": message,
-        "expires_at": (
-            datetime.now() + timedelta(seconds=duration_seconds)
-        ).isoformat(),
+        "expires_at": (datetime.now() + timedelta(seconds=duration_seconds)).isoformat(),
     }
-
 
 def get_active_notice():
     notice = st.session_state.get(f"{PAGE_KEY}_notice")
     if not notice:
         return None
-
     expires_at = notice.get("expires_at")
     if not expires_at:
         return notice
-
     if datetime.now() >= datetime.fromisoformat(expires_at):
         clear_attendance_notice()
         return None
-
     return notice
-
 
 def render_attendance_notice():
     notice = get_active_notice()
     if not notice:
         return
-
     icon = NOTICE_ICONS.get(notice["level"], NOTICE_ICONS["info"])
-    st.toast(f"{notice['title']}: {notice['message']}", icon=icon)
+    st.toast(f"**{notice['title']}**: {notice['message']}", icon=icon)
     clear_attendance_notice()
-
 
 def get_recent_attempt_key(employee_code, camera_config):
     return f"{employee_code}:{camera_config['log_type']}"
-
 
 def get_recent_attempt_remaining(employee_code, camera_config):
     attempt_key = st.session_state.get(f"{PAGE_KEY}_last_attempt_key")
     attempt_time_raw = st.session_state.get(f"{PAGE_KEY}_last_attempt_at")
     current_key = get_recent_attempt_key(employee_code, camera_config)
-
     if attempt_key != current_key or not attempt_time_raw:
         return 0
-
     attempt_time = datetime.fromisoformat(attempt_time_raw)
-    remaining_seconds = AUTO_RETRY_COOLDOWN_SECONDS - (
-        datetime.now() - attempt_time
-    ).total_seconds()
+    remaining_seconds = AUTO_RETRY_COOLDOWN_SECONDS - (datetime.now() - attempt_time).total_seconds()
     return max(0, math.ceil(remaining_seconds))
 
-
 def mark_recent_attempt(employee_code, camera_config):
-    st.session_state[f"{PAGE_KEY}_last_attempt_key"] = get_recent_attempt_key(
-        employee_code,
-        camera_config,
-    )
+    st.session_state[f"{PAGE_KEY}_last_attempt_key"] = get_recent_attempt_key(employee_code, camera_config)
     st.session_state[f"{PAGE_KEY}_last_attempt_at"] = datetime.now().isoformat()
-
 
 def get_log_cooldown_remaining(employee_code, camera_config):
     latest_log = get_latest_attendance_log(employee_code)
     if not latest_log:
         return 0
-
     if latest_log["log_type"] != camera_config["log_type"]:
         return 0
-
     log_time = datetime.strptime(latest_log["log_time"], "%Y-%m-%d %H:%M:%S")
-    remaining_seconds = AUTO_ACTION_COOLDOWN_SECONDS - (
-        datetime.now() - log_time
-    ).total_seconds()
+    remaining_seconds = AUTO_ACTION_COOLDOWN_SECONDS - (datetime.now() - log_time).total_seconds()
     return max(0, math.ceil(remaining_seconds))
-
 
 def update_stability_state(recognized_match):
     recognized_code = recognized_match["display_code"]
@@ -204,13 +188,11 @@ def update_stability_state(recognized_match):
     st.session_state[f"{PAGE_KEY}_stable_frame_count"] = stable_count
     return stable_count
 
-
 def clear_tracking_state():
     clear_recognized_employee_state()
     reset_stability_state()
 
-
-def attempt_auto_attendance(camera_config):
+def attempt_auto_attendance(camera_config, selected_camera_idx):
     recognized_code = st.session_state.get(f"{PAGE_KEY}_recognized_employee_code")
     recognized_confidence = st.session_state.get(f"{PAGE_KEY}_recognized_confidence")
     stable_count = st.session_state.get(f"{PAGE_KEY}_stable_frame_count", 0)
@@ -223,147 +205,91 @@ def attempt_auto_attendance(camera_config):
         return
 
     mark_recent_attempt(recognized_code, camera_config)
-
-    cooldown_remaining = get_log_cooldown_remaining(recognized_code, camera_config)
+    log_type = camera_config["log_type"]
     action_text = get_action_text(camera_config)
 
+    # --- KIỂM TRA ĐIỀU KIỆN ĐIỂM DANH (BUSINESS RULES) ---
+    if log_type == "IN":
+        can_log, msg = can_check_in(recognized_code)
+        if not can_log:
+            warning_msg = f"⚠️ Nhân viên {recognized_code} đã thực hiện check-in rồi! Không thể check-in được nữa."
+            trigger_attendance_toast(recognized_code, "already_checked_in", warning_msg, icon="⚠️")
+            st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+                "employee_code": recognized_code,
+                "status": "already_checked_in",
+                "message": f"⚠️ Nhân viên **{recognized_code}** đã thực hiện check-in rồi! Không thể check-in được nữa.",
+                "action": action_text,
+            }
+            reset_stability_state()
+            return
+    else:
+        # log_type == "OUT"
+        can_log, msg = can_check_out(recognized_code)
+        if not can_log:
+            if "not checked in" in msg.lower():
+                warning_msg = f"⚠️ Nhân viên {recognized_code} chưa thực hiện check-in hôm nay! Không thể check-out."
+                ui_status = "not_checked_in"
+                ui_msg = f"⚠️ Nhân viên **{recognized_code}** chưa thực hiện check-in hôm nay! Không thể check-out."
+            else:
+                warning_msg = f"⚠️ Nhân viên {recognized_code} đã thực hiện check-out rồi! Không thể check-out được nữa."
+                ui_status = "already_checked_out"
+                ui_msg = f"⚠️ Nhân viên **{recognized_code}** đã thực hiện check-out rồi! Không thể check-out được nữa."
+            trigger_attendance_toast(recognized_code, ui_status, warning_msg, icon="⚠️")
+            st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+                "employee_code": recognized_code,
+                "status": ui_status,
+                "message": ui_msg,
+                "action": action_text,
+            }
+            reset_stability_state()
+            return
+
+    # Kiểm tra cooldown giữa 2 lần thao tác liên tiếp
+    cooldown_remaining = get_log_cooldown_remaining(recognized_code, camera_config)
     if cooldown_remaining > 0:
-        set_attendance_notice(
-            "warning",
-            "Cooldown Active",
-            (
-                f"A recent {action_text} for {recognized_code} was just recorded. "
-                f"Please wait {cooldown_remaining} more second(s)."
-            ),
-        )
+        info_msg = f"Vừa ghi nhận {action_text} cho {recognized_code}. Vui lòng chờ {cooldown_remaining}s."
+        trigger_attendance_toast(recognized_code, "cooldown", f"ℹ️ {info_msg}", icon="ℹ️")
+        st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+            "employee_code": recognized_code,
+            "status": "cooldown",
+            "message": f"ℹ️ Vừa ghi nhận {action_text} cho **{recognized_code}**. Vui lòng chờ {cooldown_remaining}s.",
+            "action": action_text,
+        }
         reset_stability_state()
         return
 
+    # Thực hiện ghi nhận điểm danh vào SQLite
     try:
         new_log = create_attendance_from_camera(
             employee_code=recognized_code,
             confidence=recognized_confidence,
-            camera_index=st.session_state[f"{PAGE_KEY}_camera_index"],
+            camera_index=selected_camera_idx,
         )
-        set_attendance_notice(
-            "success",
-            "Attendance Recorded",
-            (
-                f"{new_log['employee_code']} {action_text} successful at "
-                f"{new_log['log_time']}."
-            ),
-        )
+        st.session_state[f"{PAGE_KEY}_latest_success_log"] = new_log
+        success_toast = f"✅ Xác thực thành công: {new_log['employee_code']}! Đã ghi nhận điểm danh {action_text} lúc {new_log['log_time']}."
+        trigger_attendance_toast(recognized_code, "success", success_toast, icon="✅")
+        st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+            "employee_code": recognized_code,
+            "status": "success",
+            "message": f"✅ Xác thực thành công: **{new_log['employee_code']}**! Đã ghi nhận điểm danh {action_text} thành công vào lúc {new_log['log_time']}.",
+            "log_time": new_log["log_time"],
+            "action": action_text,
+        }
     except ValueError as error:
-        set_attendance_notice(
-            "warning",
-            "Attendance Blocked",
-            str(error),
-        )
+        error_msg = f"⚠️ Không thể điểm danh: {error}"
+        trigger_attendance_toast(recognized_code, "error", error_msg, icon="⚠️")
+        st.session_state[f"{PAGE_KEY}_last_attendance_status"] = {
+            "employee_code": recognized_code,
+            "status": "error",
+            "message": error_msg,
+            "action": action_text,
+        }
     finally:
         reset_stability_state()
 
 
-def render_attendance_status(run_camera, selected_camera_config):
-    recognized_employee_code = st.session_state.get(
-        f"{PAGE_KEY}_recognized_employee_code"
-    )
-    recognized_confidence = st.session_state.get(f"{PAGE_KEY}_recognized_confidence")
-    recognized_threshold = st.session_state.get(f"{PAGE_KEY}_recognized_threshold")
-    stable_count = st.session_state.get(f"{PAGE_KEY}_stable_frame_count", 0)
-    display_stable_count = min(stable_count, AUTO_MATCH_REQUIRED_FRAMES)
-    cooldown_remaining = 0
-
-    if recognized_employee_code:
-        cooldown_remaining = get_log_cooldown_remaining(
-            recognized_employee_code,
-            selected_camera_config,
-        )
-
-    with st.container(border=True):
-        st.subheader("Recognition Result")
-
-        if recognized_employee_code:
-            code_col, confidence_col = st.columns([1.1, 1])
-            with code_col:
-                st.caption("Employee Code")
-                st.markdown(f"### {recognized_employee_code}")
-            with confidence_col:
-                st.metric("Confidence", f"{recognized_confidence:.2f}")
-
-            threshold_text = (
-                "N/A"
-                if recognized_threshold is None
-                else f"{recognized_threshold:.2f}"
-            )
-            st.write(f"**Current threshold:** {threshold_text}")
-
-            latest_log = get_latest_attendance_log(
-                recognized_employee_code,
-                log_type=selected_camera_config["log_type"],
-            )
-            if latest_log:
-                st.caption(
-                    f"Latest {get_action_text(selected_camera_config)} event for this employee"
-                )
-                log_col_1, log_col_2 = st.columns(2)
-                log_col_1.write(f"**Type:** {latest_log['log_type']}")
-                log_col_2.write(f"**Camera:** {latest_log['camera_source']}")
-                st.write(f"**Time:** {latest_log['log_time']}")
-            else:
-                st.caption(
-                    f"No previous {get_action_text(selected_camera_config)} record found for this employee."
-                )
-        else:
-            st.info("No valid recognition result yet. Keep one face centered in the frame.")
-
-    with st.container(border=True):
-        st.subheader("Auto Attendance Mode")
-        st.caption(selected_camera_config["description"])
-        st.write(f"**Current mode:** {selected_camera_config['title']}")
-
-        if not run_camera:
-            st.info("Turn on 'Run Camera' to start touchless attendance.")
-            return
-
-        if not recognized_employee_code:
-            st.info("Waiting for one valid face so the system can start stabilizing recognition.")
-            st.progress(
-                0.0,
-                text=(
-                    "Stable recognition progress: "
-                    f"0 / {AUTO_MATCH_REQUIRED_FRAMES} frames"
-                ),
-            )
-            return
-
-        progress_value = min(stable_count / AUTO_MATCH_REQUIRED_FRAMES, 1.0)
-        st.progress(
-            progress_value,
-            text=(
-                "Stable recognition progress: "
-                f"{display_stable_count} / {AUTO_MATCH_REQUIRED_FRAMES} frames"
-            ),
-        )
-
-        if cooldown_remaining > 0:
-            st.warning(
-                f"Cooldown active for {recognized_employee_code}. Please wait {cooldown_remaining} second(s)."
-            )
-            return
-
-        if stable_count < AUTO_MATCH_REQUIRED_FRAMES:
-            remaining_frames = AUTO_MATCH_REQUIRED_FRAMES - stable_count
-            remaining_seconds = remaining_frames * CAMERA_INTERVAL_SECONDS
-            st.info(
-                f"Hold still for about {remaining_seconds:.1f}s more "
-                f"({remaining_frames} stable frame(s)) to trigger automatic attendance."
-            )
-            return
-
-        st.success("Stable recognition confirmed. Recording attendance automatically...")
-
-
-control_col_1, control_col_2, control_col_3 = st.columns([1.2, 0.8, 1.4], gap="large")
+# --- HEADER CONTROLS ---
+control_col_1, control_col_2, control_col_3 = st.columns([1.2, 1.2, 1.4], gap="large")
 with control_col_1:
     selected_camera_index = st.selectbox(
         "Choose camera",
@@ -371,19 +297,30 @@ with control_col_1:
         format_func=lambda index: get_camera_config(index)["title"],
         key=f"{PAGE_KEY}_camera_index",
     )
-with control_col_2:
-    run_camera = st.checkbox("Run Camera", key=f"{PAGE_KEY}_run_camera")
 
 selected_camera_config = get_camera_config(selected_camera_index)
 
+with control_col_2:
+    st.caption("Camera Controls")
+    btn_start_col, btn_stop_col = st.columns(2)
+    with btn_start_col:
+        if st.button("▶️ Bật Live", type="primary", use_container_width=True):
+            st.session_state[f"{PAGE_KEY}_is_running"] = True
+    with btn_stop_col:
+        if st.button("⏹️ Tắt", use_container_width=True):
+            st.session_state[f"{PAGE_KEY}_is_running"] = False
+            release_camera(st.session_state, PAGE_KEY)
+            clear_tracking_state()
+            st.session_state.pop(f"{PAGE_KEY}_last_attendance_status", None)
+            st.session_state.pop(f"{PAGE_KEY}_last_toast_key", None)
+            st.session_state.pop(f"{PAGE_KEY}_last_toast_time", None)
+            st.rerun()
+
 with control_col_3:
     with st.container(border=True):
-        st.caption("Auto Attendance Flow")
+        st.caption("Active Mode")
         st.markdown(f"**{selected_camera_config['title']}**")
-        st.write(selected_camera_config["description"])
-        st.caption(
-            f"Requirement: {AUTO_MATCH_REQUIRED_FRAMES} stable frames before the system auto logs attendance."
-        )
+        st.caption(f"{selected_camera_config['description']} (Requires {AUTO_MATCH_REQUIRED_FRAMES} stable frames)")
 
 previous_camera_index = st.session_state.get(f"{PAGE_KEY}_active_camera_index")
 if previous_camera_index != selected_camera_index:
@@ -391,146 +328,270 @@ if previous_camera_index != selected_camera_index:
     release_camera(st.session_state, PAGE_KEY)
     clear_tracking_state()
     clear_attendance_notice()
+    st.session_state.pop(f"{PAGE_KEY}_last_attendance_status", None)
+    st.session_state.pop(f"{PAGE_KEY}_last_toast_key", None)
+    st.session_state.pop(f"{PAGE_KEY}_last_toast_time", None)
 
+st.divider()
 
-@st.fragment(run_every=camera_run_every)
-def render_dynamic_attendance():
-    selected_camera_config = get_camera_config(st.session_state[f"{PAGE_KEY}_camera_index"])
-    run_camera = st.session_state.get(f"{PAGE_KEY}_run_camera", False)
+render_attendance_notice()
+preview_col, details_col = st.columns([1.5, 1], gap="large")
 
-    render_attendance_notice()
-    preview_col, details_col = st.columns([1.8, 0.95], gap="large")
+with preview_col:
+    with st.container(border=True):
+        st.subheader("Live Preview (Native 30 FPS)")
+        st.caption("Khung hình đọc trực tiếp từ DirectShow webcam với độ trễ 0ms.")
+        video_placeholder = st.empty()
 
-    with preview_col:
-        with st.container(border=True):
-            st.subheader("Live Camera")
-            st.caption(
-                "Keep exactly one face inside the frame. When recognition stays stable long enough, attendance is recorded automatically."
-            )
+with details_col:
+    status_card_placeholder = st.empty()
+    latest_log_placeholder = st.empty()
 
-            if not run_camera:
-                release_camera(st.session_state, PAGE_KEY)
-                clear_tracking_state()
-                st.info("Turn on 'Run Camera' to start attendance recognition.")
-            else:
-                cap = get_or_create_camera(
+is_running = st.session_state.get(f"{PAGE_KEY}_is_running", False)
+
+if not is_running:
+    video_placeholder.info("🟢 Camera đang tắt. Bấm nút **'▶️ Bật Live'** ở trên để phát video trực tiếp.")
+    with status_card_placeholder.container(border=True):
+        st.subheader("Recognition Status")
+        st.info("Bật camera để bắt đầu nhận diện và điểm danh tự động.")
+else:
+    cap = get_or_create_camera(st.session_state, PAGE_KEY, selected_camera_index)
+    if cap is None or not cap.isOpened():
+        st.session_state[f"{PAGE_KEY}_is_running"] = False
+        release_camera(st.session_state, PAGE_KEY)
+        clear_tracking_state()
+        video_placeholder.error("Không thể mở thiết bị Camera. Vui lòng kiểm tra webcam.")
+    else:
+        frame_counter = 0
+        fps_start = time.time()
+        last_video_time = 0.0
+        last_ui_time = 0.0
+        last_rendered_faces = -1
+        last_rendered_code = None
+        last_rendered_pred_code = None
+        last_rendered_pred_match = None
+        last_rendered_cnt = -1
+        last_rendered_status_key = None
+
+        # Vòng lặp phát video trực tiếp mượt mà liên tục (Live Loop)
+        while st.session_state.get(f"{PAGE_KEY}_is_running", False):
+            ret, frame = read_camera_frame(cap)
+            if not ret or frame is None:
+                video_placeholder.warning("Mất tín hiệu camera hoặc đang khởi tạo...")
+                time.sleep(0.03)
+                continue
+
+            frame_counter += 1
+            faces_list = update_detected_faces(st.session_state, PAGE_KEY, frame, detect_faces)
+
+            annotated_frame = frame.copy()
+            recognized_match = None
+            prediction = None
+            model_error = False
+
+            try:
+                prediction, is_new_prediction = get_or_update_prediction(
                     st.session_state,
                     PAGE_KEY,
-                    st.session_state[f"{PAGE_KEY}_camera_index"],
+                    frame,
+                    faces_list,
+                    crop_and_resize_face,
+                    predict_face,
+                    camera_index=selected_camera_index,
+                    padding_ratio=RECOGNITION_PADDING_RATIO,
+                )
+            except Exception:
+                prediction = None
+                is_new_prediction = False
+                model_error = True
+
+            # Vẽ Bounding Box trực quan theo trạng thái nhận diện thực tế
+            for (x, y, w, h) in faces_list:
+                if len(faces_list) > 1:
+                    label_text = f"Multiple faces ({len(faces_list)})"
+                    box_color = (0, 165, 255)  # Màu cam cảnh báo
+                elif model_error:
+                    label_text = "Model error"
+                    box_color = (0, 0, 255)    # Màu đỏ lỗi
+                elif prediction is not None:
+                    if prediction.get("is_match", False):
+                        recognized_match = prediction
+                        label_text = f"{prediction['display_code']} ({prediction['confidence']:.2f})"
+                        box_color = (0, 255, 0)  # Màu xanh lá nhận diện chuẩn xác
+                    else:
+                        label_text = f"Unknown ({prediction['confidence']:.2f})"
+                        box_color = (0, 0, 255)  # Màu đỏ chưa đăng ký
+                else:
+                    # Đang quét / phân tích khuôn mặt lần đầu (chưa có kết quả)
+                    label_text = "Scanning..."
+                    box_color = (0, 215, 255)  # Màu vàng cam đang quét
+
+                cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), box_color, 2)
+                cv2.putText(
+                    annotated_frame,
+                    label_text,
+                    (x, max(20, y - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    box_color,
+                    2,
                 )
 
-                if not cap.isOpened():
-                    release_camera(st.session_state, PAGE_KEY)
-                    clear_tracking_state()
-                    st.error("Cannot open camera")
-                else:
-                    ret, frame = cap.read()
-                    if not ret:
-                        release_camera(st.session_state, PAGE_KEY)
-                        clear_tracking_state()
-                        st.error("Cannot read frame from camera")
+            # Đếm FPS thời gian thực
+            elapsed = time.time() - fps_start
+            fps = frame_counter / elapsed if elapsed > 0 else 0
+            cv2.putText(
+                annotated_frame,
+                f"LIVE: {fps:.1f} FPS | Faces: {len(faces_list)}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 0),
+                2,
+            )
+
+            # Cập nhật kết quả nhận diện & điểm danh tự động (duy trì tracking mượt mà qua các frame)
+            if len(faces_list) == 1 and recognized_match is not None:
+                st.session_state[f"{PAGE_KEY}_recognized_employee_code"] = recognized_match["display_code"]
+                st.session_state[f"{PAGE_KEY}_recognized_confidence"] = recognized_match["confidence"]
+                st.session_state[f"{PAGE_KEY}_recognized_threshold"] = recognized_match["match_threshold"]
+                update_stability_state(recognized_match)
+                attempt_auto_attendance(selected_camera_config, selected_camera_index)
+            else:
+                clear_tracking_state()
+
+            # Điều tiết hiển thị video Zero-Delay (Golden FPS ~14.7 FPS, Turbo-JPEG nhẹ ~20KB)
+            now = time.time()
+            if now - last_video_time >= STREAM_FRAME_INTERVAL:
+                render_stream_frame(video_placeholder, annotated_frame)
+                last_video_time = now
+
+            # Điều tiết cập nhật widget trạng thái: chỉ vẽ lại khi có kết quả mới, đổi số mặt, hoặc định kỳ 0.25s
+            rec_code = st.session_state.get(f"{PAGE_KEY}_recognized_employee_code")
+            stable_cnt = st.session_state.get(f"{PAGE_KEY}_stable_frame_count", 0)
+            pred_code = prediction.get("display_code") if prediction else None
+            pred_match = prediction.get("is_match") if prediction else None
+            current_status = st.session_state.get(f"{PAGE_KEY}_last_attendance_status")
+            status_key = (current_status.get("employee_code"), current_status.get("status")) if current_status else None
+
+            ui_needed = (
+                is_new_prediction
+                or len(faces_list) != last_rendered_faces
+                or rec_code != last_rendered_code
+                or pred_code != last_rendered_pred_code
+                or pred_match != last_rendered_pred_match
+                or stable_cnt != last_rendered_cnt
+                or status_key != last_rendered_status_key
+                or (now - last_ui_time >= 0.25)
+            )
+
+            if ui_needed:
+                last_ui_time = now
+                last_rendered_faces = len(faces_list)
+                last_rendered_code = rec_code
+                last_rendered_pred_code = pred_code
+                last_rendered_pred_match = pred_match
+                last_rendered_cnt = stable_cnt
+                last_rendered_status_key = status_key
+
+                with status_card_placeholder.container(border=True):
+                    st.subheader("Recognition Status")
+                    if len(faces_list) == 0:
+                        st.markdown(
+                            """
+                            <div style="text-align: center; padding: 20px;">
+                                <h3 style="color: #64748B;">Looking for face...</h3>
+                                <p style="color: #94A3B8;">Please step into the frame</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
+                    elif len(faces_list) > 1:
+                        st.markdown(
+                            f"""
+                            <div style="padding: 15px; border-radius: 8px; background-color: #FEF3C7; border: 1px solid #F59E0B; text-align: center;">
+                                <h4 style="margin: 0; color: #B45309;">⚠️ Multiple Faces Detected</h4>
+                                <p style="margin: 5px 0 0 0; color: #92400E;">Phát hiện {len(faces_list)} khuôn mặt. Vui lòng chỉ đứng 1 người trước camera.</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
+                    elif model_error:
+                        st.error("❌ Lỗi mô hình: Không thể thực hiện nhận diện.")
+                    elif prediction is None:
+                        st.markdown(
+                            """
+                            <div style="padding: 15px; border-radius: 8px; background-color: #EFF6FF; border: 1px solid #3B82F6; text-align: center;">
+                                <h4 style="margin: 0; color: #1D4ED8;">🔍 Analyzing Face...</h4>
+                                <p style="margin: 5px 0 0 0; color: #1E40AF;">Đang phân tích khuôn mặt, vui lòng giữ yên...</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
+                    elif not prediction.get("is_match", False):
+                        st.markdown(
+                            f"""
+                            <div style="padding: 15px; border-radius: 8px; background-color: #FEE2E2; border: 1px solid #EF4444; text-align: center;">
+                                <h4 style="margin: 0; color: #B91C1C;">❌ Unknown Employee</h4>
+                                <p style="margin: 5px 0 0 0; color: #991B1B;">Khuôn mặt chưa được đăng ký trong hệ thống.</p>
+                                <p style="margin: 4px 0 0 0; font-size: 0.85em; color: #7F1D1D;">Độ tin cậy: {prediction['confidence']:.2f} > Ngưỡng: {prediction['match_threshold']:.2f}</p>
+                            </div>
+                            """, unsafe_allow_html=True
+                        )
                     else:
-                        faces_list = update_detected_faces(
-                            st.session_state,
-                            PAGE_KEY,
-                            frame,
-                            detect_faces,
-                        )
+                        # Khớp nhân viên hợp lệ (Target Locked)
+                        last_status = st.session_state.get(f"{PAGE_KEY}_last_attendance_status")
 
-                        annotated_frame = frame.copy()
-                        recognized_match = None
-                        prediction = None
-                        model_error = False
+                        if last_status and last_status.get("employee_code") == rec_code:
+                            status_type = last_status.get("status")
+                            st.markdown(f"**🎯 Target Locked: {rec_code}**")
 
-                        try:
-                            prediction, _ = get_or_update_prediction(
-                                st.session_state,
-                                PAGE_KEY,
-                                frame,
-                                faces_list,
-                                crop_and_resize_face,
-                                predict_face,
-                                camera_index=st.session_state[f"{PAGE_KEY}_camera_index"],
-                                padding_ratio=RECOGNITION_PADDING_RATIO,
-                            )
-                        except Exception:
-                            prediction = None
-                            model_error = True
-
-                        for (x, y, w, h) in faces_list:
-                            if len(faces_list) == 1 and prediction is not None:
-                                if prediction["is_match"]:
-                                    recognized_match = prediction
-                                    label_text = (
-                                        f"{prediction['display_code']} "
-                                        f"({prediction['confidence']:.2f})"
-                                    )
-                                    box_color = (0, 255, 0)
-                                else:
-                                    label_text = (
-                                        f"Unknown ({prediction['confidence']:.2f} > "
-                                        f"{prediction['match_threshold']:.2f})"
-                                    )
-                                    box_color = (0, 0, 255)
-                            elif model_error:
-                                label_text = "Model error"
-                                box_color = (0, 0, 255)
+                            if status_type == "success":
+                                st.progress(1.0, text="Điểm danh hoàn tất (3 / 3 frames)")
+                                st.success(last_status.get("message", f"✅ Xác thực thành công: **{rec_code}**!"))
+                            elif status_type == "already_checked_in":
+                                st.progress(1.0, text="Đã kiểm tra trạng thái (3 / 3 frames)")
+                                st.warning(last_status.get("message", f"⚠️ Nhân viên **{rec_code}** đã thực hiện check-in rồi! Không thể check-in được nữa."))
+                            elif status_type in ("already_checked_out", "not_checked_in"):
+                                st.progress(1.0, text="Đã kiểm tra trạng thái (3 / 3 frames)")
+                                st.warning(last_status.get("message", "⚠️ Thao tác check-out không hợp lệ."))
+                            elif status_type == "cooldown":
+                                st.progress(1.0, text="Đang trong thời gian chờ (3 / 3 frames)")
+                                st.info(last_status.get("message", "Vui lòng chờ một chút."))
                             else:
-                                label_text = "Face detected"
-                                box_color = (0, 215, 255)
-
-                            cv2.rectangle(
-                                annotated_frame,
-                                (x, y),
-                                (x + w, y + h),
-                                box_color,
-                                2,
-                            )
-                            cv2.putText(
-                                annotated_frame,
-                                label_text,
-                                (x, y - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.8,
-                                box_color,
-                                2,
-                            )
-
-                        if len(faces_list) == 1 and recognized_match is not None:
-                            st.session_state[f"{PAGE_KEY}_recognized_employee_code"] = (
-                                recognized_match["display_code"]
-                            )
-                            st.session_state[f"{PAGE_KEY}_recognized_confidence"] = (
-                                recognized_match["confidence"]
-                            )
-                            st.session_state[f"{PAGE_KEY}_recognized_threshold"] = (
-                                recognized_match["match_threshold"]
-                            )
-                            update_stability_state(recognized_match)
-                            attempt_auto_attendance(selected_camera_config)
+                                st.error(last_status.get("message", "Lỗi điểm danh."))
                         else:
-                            clear_tracking_state()
+                            disp_cnt = min(stable_cnt, AUTO_MATCH_REQUIRED_FRAMES)
+                            st.markdown(f"**🎯 Target Locked: {rec_code}**")
+                            st.progress(
+                                min(stable_cnt / AUTO_MATCH_REQUIRED_FRAMES, 1.0),
+                                text=f"Stabilizing... ({disp_cnt} / {AUTO_MATCH_REQUIRED_FRAMES} frames)",
+                            )
+                            if stable_cnt >= AUTO_MATCH_REQUIRED_FRAMES:
+                                st.info(f"⏳ Đang xử lý điểm danh cho **{rec_code}**...")
+                            else:
+                                st.info(f"Giữ yên mặt thêm {AUTO_MATCH_REQUIRED_FRAMES - stable_cnt} frame để xác nhận...")
 
-                        cv2.putText(
-                            annotated_frame,
-                            f"Faces detected: {len(faces_list)}",
-                            (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (0, 255, 0),
-                            2,
-                        )
+                # Hiển thị thẻ log điểm danh mới nhất hoặc thông tin nhân viên vừa quét
+                latest_log = st.session_state.get(f"{PAGE_KEY}_latest_success_log")
+                if rec_code:
+                    rec_conf = st.session_state.get(f"{PAGE_KEY}_recognized_confidence", 0)
+                    latest_log_placeholder.markdown(
+                        f"""
+                        <div style="background-color: #FFFFFF; padding: 15px; border-radius: 8px; border: 1px solid #10B981; margin-top: 15px;">
+                            <h4 style="margin:0; color: #10B981;">{rec_code}</h4>
+                            <p style="margin: 5px 0 0 0; color: #334155;">Confidence: <b>{rec_conf:.2f}</b></p>
+                        </div>
+                        """, unsafe_allow_html=True
+                    )
+                elif latest_log:
+                    latest_log_placeholder.markdown(
+                        f"""
+                        <div style="background-color: #F0FDF4; padding: 15px; border-radius: 8px; border: 1px solid #10B981; margin-top: 15px;">
+                            <span style="background-color: #10B981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold;">{latest_log.get('log_type', 'IN')}</span>
+                            <h4 style="margin:5px 0 0 0; color: #047857;">{latest_log.get('employee_code')}</h4>
+                            <p style="margin: 3px 0 0 0; font-size: 0.9em; color: #334155;">Thời gian: <b>{latest_log.get('log_time')}</b></p>
+                        </div>
+                        """, unsafe_allow_html=True
+                    )
+                else:
+                    latest_log_placeholder.empty()
 
-                        frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                        st.image(frame_rgb, channels="RGB")
-
-    with details_col:
-        render_attendance_status(run_camera, selected_camera_config)
-
-
-render_dynamic_attendance()
-
-
-
-
-
+            time.sleep(STREAM_SLEEP_INTERVAL)

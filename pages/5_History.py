@@ -10,11 +10,11 @@ from db.database import get_employee_codes, initialize_database
 
 initialize_database()
 initialize_attendance_logs()
-st.set_page_config(page_title="Attendance Dashboard", layout="wide")
+# st.set_page_config(page_title="Attendance Dashboard", layout="wide")
 release_inactive_cameras(st.session_state)
-st.title("Attendance History")
-st.caption("Review attendance records, filter the data you need, and export the current view.")
 
+st.title("🕒 Attendance History")
+st.markdown("Search, filter, and export the complete log of employee check-ins and check-outs.")
 
 def build_export_file_name(extension, employee_code, log_type):
     employee_part = "all" if employee_code == "All" else employee_code.lower()
@@ -22,19 +22,15 @@ def build_export_file_name(extension, employee_code, log_type):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"attendance_history_{employee_part}_{log_type_part}_{timestamp}.{extension}"
 
-
 def dataframe_to_excel_bytes(dataframe):
     output = BytesIO()
-
     try:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             dataframe.to_excel(writer, index=False, sheet_name="Attendance History")
     except ImportError:
         return None
-
     output.seek(0)
     return output.getvalue()
-
 
 def format_history_dataframe(dataframe):
     if dataframe.empty:
@@ -66,17 +62,15 @@ def format_history_dataframe(dataframe):
         ]
     ]
 
-
 employee_options = ["All"] + get_employee_codes()
 log_type_options = ["All", "IN", "OUT"]
 
-filter_col, export_col = st.columns([1.2, 1], gap="large")
+filter_col, export_col = st.columns([1.5, 1], gap="large")
 
 with filter_col:
     with st.container(border=True):
-        st.subheader("Filter Data")
-        st.caption("Use filters to narrow down the records before exporting or reviewing the table.")
-
+        st.subheader("🔍 Filter Data")
+        
         filter_input_col_1, filter_input_col_2 = st.columns(2)
         with filter_input_col_1:
             selected_employee_code = st.selectbox(
@@ -104,20 +98,19 @@ check_out_count = int((history_df["log_type"] == "OUT").sum()) if not history_df
 
 with export_col:
     with st.container(border=True):
-        st.subheader("Export Data")
-        st.caption("Export the exact dataset currently shown in the table below as Excel.")
+        st.subheader("📊 Summary & Export")
 
         metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
-        metric_col_1.metric("Records", total_records)
-        metric_col_2.metric("IN", check_in_count)
-        metric_col_3.metric("OUT", check_out_count)
+        metric_col_1.metric("Total", total_records)
+        metric_col_2.metric("Check In", check_in_count)
+        metric_col_3.metric("Check Out", check_out_count)
 
         excel_bytes = dataframe_to_excel_bytes(display_history_df)
         if excel_bytes is None:
             st.info("Install openpyxl if you want Excel export.")
         else:
             st.download_button(
-                "Export Excel",
+                "📥 Export to Excel",
                 data=excel_bytes,
                 file_name=build_export_file_name(
                     "xlsx",
@@ -133,10 +126,34 @@ with export_col:
             )
 
 with st.container(border=True):
-    st.subheader("Attendance Data")
-    st.caption("Newest attendance records are shown first.")
+    st.subheader("📋 Attendance Data")
 
     if display_history_df.empty:
         st.info("No attendance history found for the selected filters.")
     else:
-        st.dataframe(display_history_df, use_container_width=True)
+        # Applying styling via dataframe column_config
+        def style_type(val):
+            color = "#10B981" if val == "IN" else "#F59E0B"
+            return f"color: {color}; font-weight: bold"
+            
+        styled_df = display_history_df.style.map(style_type, subset=["Type"])
+        
+        st.dataframe(
+            styled_df, 
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Confidence": st.column_config.ProgressColumn(
+                    "Confidence",
+                    help="Face recognition confidence",
+                    format="%.2f",
+                    min_value=0,
+                    max_value=1.0,
+                ),
+                "Log Time": st.column_config.DatetimeColumn(
+                    "Log Time",
+                    format="YYYY-MM-DD HH:mm:ss"
+                )
+            },
+            height=500
+        )

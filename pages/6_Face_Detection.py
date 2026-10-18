@@ -1,109 +1,117 @@
-﻿import cv2
+import time
+import cv2
 import streamlit as st
 
 from core.camera_stream import (
-    annotate_faces,
     get_or_create_camera,
     release_camera,
     release_inactive_cameras,
     update_detected_faces,
+    annotate_faces,
 )
 from core.face_detect import detect_faces
-st.set_page_config(page_title="Attendance Dashboard", layout="wide")
 
 PAGE_KEY = "face_detection"
-CAMERA_INTERVAL_SECONDS = 0.15
 
-if f"{PAGE_KEY}_run_camera" not in st.session_state:
-    st.session_state[f"{PAGE_KEY}_run_camera"] = False
+if f"{PAGE_KEY}_is_running" not in st.session_state:
+    st.session_state[f"{PAGE_KEY}_is_running"] = False
 
 release_inactive_cameras(st.session_state, PAGE_KEY)
 
+st.title("🔍 Face Detection (Native Live)")
+st.caption("Technical test page for checking camera input and face detection quality using OpenCV DirectShow.")
 
-camera_run_every = (
-    CAMERA_INTERVAL_SECONDS
-    if st.session_state.get(f"{PAGE_KEY}_run_camera", False)
-    else None
-)
-
-st.title("Face Detection")
-st.caption("Technical test page for checking camera input and face detection quality.")
-
-control_col_1, control_col_2, control_col_3 = st.columns([1, 0.8, 1.2], gap="large")
+control_col_1, control_col_2, control_col_3 = st.columns([1, 1.2, 1.2], gap="large")
 with control_col_1:
-    st.selectbox("Choose camera", [0, 1], key=f"{PAGE_KEY}_camera_index")
+    selected_camera_index = st.selectbox(
+        "Choose camera",
+        [0, 1],
+        format_func=lambda idx: f"Camera {idx}",
+        key=f"{PAGE_KEY}_camera_index",
+    )
 with control_col_2:
-    run_camera = st.checkbox("Run Camera", key=f"{PAGE_KEY}_run_camera")
+    st.caption("Camera Controls")
+    btn_start_col, btn_stop_col = st.columns(2)
+    with btn_start_col:
+        if st.button("▶️ Bật Live Preview", type="primary", use_container_width=True):
+            st.session_state[f"{PAGE_KEY}_is_running"] = True
+    with btn_stop_col:
+        if st.button("⏹️ Tắt", use_container_width=True):
+            st.session_state[f"{PAGE_KEY}_is_running"] = False
+            release_camera(st.session_state, PAGE_KEY)
+            st.rerun()
+
 with control_col_3:
     with st.container(border=True):
         st.caption("Test Goal")
-        st.write("Verify that the selected camera can detect one or more faces in realtime.")
+        st.write("Verify that the native camera can detect one or more faces in realtime.")
 
+previous_camera_index = st.session_state.get(f"{PAGE_KEY}_active_camera_index")
+if previous_camera_index != selected_camera_index:
+    st.session_state[f"{PAGE_KEY}_active_camera_index"] = selected_camera_index
+    release_camera(st.session_state, PAGE_KEY)
 
-@st.fragment(run_every=camera_run_every)
-def render_live_camera():
-    selected_camera_index = st.session_state.get(f"{PAGE_KEY}_camera_index", 0)
-    run_camera = st.session_state.get(f"{PAGE_KEY}_run_camera", False)
+preview_col, info_col = st.columns([1.5, 1], gap="large")
 
-    preview_col, info_col = st.columns([1.5, 1], gap="large")
-    face_count = 0
-    status_label = "Stopped"
-    status_message = "Turn on 'Run Camera' to start live preview."
+with preview_col:
+    with st.container(border=True):
+        st.subheader("Live Preview (Native 30 FPS)")
+        st.caption("The green boxes show the faces currently detected by Haar Cascade.")
+        video_placeholder = st.empty()
 
-    with preview_col:
-        with st.container(border=True):
-            st.subheader("Live Preview")
-            st.caption("The green boxes show the faces currently detected by the model.")
+with info_col:
+    info_card_placeholder = st.empty()
 
-            if not run_camera:
-                release_camera(st.session_state, PAGE_KEY)
-                st.info(status_message)
-            else:
-                cap = get_or_create_camera(
-                    st.session_state,
-                    PAGE_KEY,
-                    selected_camera_index,
-                )
+is_running = st.session_state.get(f"{PAGE_KEY}_is_running", False)
 
-                if not cap.isOpened():
-                    status_label = "Camera Error"
-                    status_message = "Cannot open camera."
-                    st.error(status_message)
-                    release_camera(st.session_state, PAGE_KEY)
-                else:
-                    ret, frame = cap.read()
-                    if not ret:
-                        status_label = "Read Error"
-                        status_message = "Cannot read frame from camera."
-                        st.error(status_message)
-                        release_camera(st.session_state, PAGE_KEY)
-                    else:
-                        faces_list = update_detected_faces(
-                            st.session_state,
-                            PAGE_KEY,
-                            frame,
-                            detect_faces,
-                        )
-                        face_count = len(faces_list)
-                        status_label = "Running"
-                        status_message = (
-                            "Detection is running. Keep faces visible and inside the frame."
-                        )
+if not is_running:
+    video_placeholder.info("Camera đang tắt. Bấm **'▶️ Bật Live Preview'** để xem video trực tiếp.")
+    with info_card_placeholder.container(border=True):
+        st.subheader("Detection Status")
+        st.write("**Status:** Stopped")
+        st.caption("Bấm 'Bật Live Preview' để bắt đầu phát video.")
+else:
+    cap = get_or_create_camera(st.session_state, PAGE_KEY, selected_camera_index)
+    if cap is None or not cap.isOpened():
+        st.session_state[f"{PAGE_KEY}_is_running"] = False
+        release_camera(st.session_state, PAGE_KEY)
+        video_placeholder.error("Không thể mở thiết bị Camera.")
+    else:
+        frame_counter = 0
+        fps_start = time.time()
 
-                        annotated_frame = annotate_faces(frame, faces_list)
-                        frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                        st.image(frame_rgb, channels="RGB")
+        while st.session_state.get(f"{PAGE_KEY}_is_running", False):
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                video_placeholder.warning("Đang chờ khung hình...")
+                time.sleep(0.05)
+                continue
 
-    with info_col:
-        with st.container(border=True):
-            st.subheader("Detection Status")
-            metric_col_1, metric_col_2 = st.columns(2)
-            metric_col_1.metric("Camera", selected_camera_index)
-            metric_col_2.metric("Faces Detected", face_count)
-            st.write(f"**Status:** {status_label}")
-            st.caption(status_message)
-            st.caption("This page is for technical testing only and does not save any data.")
+            frame_counter += 1
+            faces_list = update_detected_faces(st.session_state, PAGE_KEY, frame, detect_faces)
+            annotated = annotate_faces(frame, faces_list)
 
+            elapsed = time.time() - fps_start
+            fps = frame_counter / elapsed if elapsed > 0 else 0
+            cv2.putText(
+                annotated,
+                f"LIVE: {fps:.1f} FPS",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 0),
+                2,
+            )
 
-render_live_camera()
+            frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            video_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
 
+            with info_card_placeholder.container(border=True):
+                st.subheader("Detection Status")
+                metric_col_1, metric_col_2 = st.columns(2)
+                metric_col_1.metric("Camera", selected_camera_index)
+                metric_col_2.metric("Faces Detected", len(faces_list))
+                st.write("**Status:** Running (DirectShow Native)")
+                st.caption(f"Đang phát mượt mà: {fps:.1f} FPS.")
+
+            time.sleep(0.01)
