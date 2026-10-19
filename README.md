@@ -5,6 +5,8 @@
   <img src="https://img.shields.io/badge/Streamlit-1.55.0-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white" alt="Streamlit" />
   <img src="https://img.shields.io/badge/OpenCV-4.13.0-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" alt="OpenCV" />
   <img src="https://img.shields.io/badge/dlib-128D_Embeddings-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="dlib" />
+  <img src="https://img.shields.io/badge/Docker-Containerized-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/Docker_Compose-Multi--Container-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose" />
   <img src="https://img.shields.io/badge/SQLite-SQLAlchemy_2.0-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite" />
   <img src="https://img.shields.io/badge/UI/UX-Clean_Enterprise_SaaS-1E3A8A?style=for-the-badge" alt="Enterprise Design System" />
 </p>
@@ -19,9 +21,14 @@
 1. [Giới Thiệu Dự Án (Project Overview)](#-giới-thiệu-dự-án-project-overview)
 2. [Các Tính Năng Nổi Bật (Key Highlights)](#-các-tính-năng-nổi-bật-key-highlights)
 3. [Cấu Trúc Thư Mục Dự Án (Project Structure)](#-cấu-trúc-thư-mục-dự-án-project-structure)
-4. [Sơ Đồ Kiến Trúc Hệ Thống (System Architecture)](#-sơ-đồ-kiến-trúc-hệ-thống-system-architecture) *(Xem chi tiết tại Phase 2)*
-5. [Cài Đặt & Khởi Chạy (Installation & Quick Start)](#-cài-đặt--khởi-chạy-installation--quick-start) *(Xem chi tiết tại Phase 3)*
-6. [Tiêu Chuẩn Thiết Kế & An Toàn Sinh Trắc Học (Design & Security)](#-tiêu-chuẩn-thiết-kế--an-toàn-sinh-trắc-học-design--security)
+4. [Công Nghệ Sử Dụng (Tech Stack)](#️-công-nghệ-sử-dụng-tech-stack)
+5. [Sơ Đồ Kiến Trúc Hệ Thống (System Architecture)](#️-sơ-đồ-kiến-trúc-hệ-thống-system-architecture)
+6. [Cài Đặt & Triển Khai (Installation & Deployment)](#-cài-đặt--khởi-chạy-installation--quick-start)
+   - [Phương Thức 1: Triển Khai Với Docker & Docker Compose](#-phương-thức-1-triển-khai-nhanh-với-docker--docker-compose-khuyến-nghị)
+   - [Phương Thức 2: Cài Đặt Thủ Công Bằng Virtualenv](#-phương-thức-2-cài-đặt-thủ-công-bằng-virtualenv-local-development)
+7. [Hướng Dẫn Sử Dụng (User Manual)](#-hướng-dẫn-sử-dụng-chi-tiết-user-manual--workflows)
+8. [Kiểm Thử Tự Động (Automated Testing)](#-kiểm-thử-tự-động-automated-testing)
+9. [Tiêu Chuẩn Thiết Kế & An Toàn Sinh Trắc Học (Design & Security)](#-tiêu-chuẩn-bảo-mật--quyền-riêng-tư-sinh-trắc-học-security--biometric-privacy)
 
 ---
 
@@ -77,6 +84,9 @@ Toàn bộ dự án được tổ chức theo kiến trúc phân tầng rõ ràn
 
 ```text
 Do_an_AI/
+|-- Dockerfile                 # Đóng gói môi trường container (Python 3.11, C++, dlib, OpenCV)
+|-- docker-compose.yml         # Cấu hình dịch vụ, port mapping 8501, volume mount dữ liệu
+|-- .dockerignore              # Loại trừ tệp tạm, venv và git cache khi build Docker image
 |-- app.py                     # Entry point chính của ứng dụng Streamlit (Navigation & Setup)
 |-- requirements.txt           # Danh mục thư viện phụ thuộc (OpenCV, Streamlit, dlib, SQLAlchemy...)
 |-- README.md                  # Tài liệu hướng dẫn dự án chuẩn Enterprise
@@ -132,6 +142,7 @@ Do_an_AI/
 | Phân hệ | Công nghệ | Mục đích |
 | :--- | :--- | :--- |
 | **Ngôn ngữ** | Python 3.11+ | Nền tảng phát triển ứng dụng chính |
+| **Container hóa** | Docker & Docker Compose | Đóng gói môi trường, quản lý service và dữ liệu độc lập nền tảng |
 | **Giao diện Web** | Streamlit 1.55+ | Xây dựng giao diện Web Multipage tương tác cao |
 | **Thị giác máy tính** | OpenCV 4.13 | Bắt luồng camera DirectShow đa luồng, xử lý khung hình |
 | **Deep Learning** | `dlib` & `face_recognition` | Trích xuất 128 chiều đặc trưng khuôn mặt (Deep Metric ResNet) |
@@ -233,15 +244,16 @@ Dưới đây là các tham số cấu hình cốt lõi được định nghĩa 
 ## 💻 Cài Đặt & Khởi Chạy (Installation & Quick Start)
 
 ### 1. Yêu Cầu Hệ Thống (Prerequisites)
-- **Hệ điều hành**: Windows 10/11 (khuyến nghị) hoặc Linux / macOS.
-- **Python**: Phiên bản `3.10` hoặc `3.11` (Khuyến nghị **Python 3.11.x**).
-- **Phần cứng**: Webcam USB (hỗ trợ chuẩn DirectShow trên Windows) hoặc Camera tích hợp Laptop.
-- **Lưu ý cài đặt `dlib` trên Windows**:
-  - `dlib` yêu cầu C++ CMake để biên dịch từ mã nguồn. Bạn cần cài đặt [Visual Studio Community](https://visualstudio.microsoft.com/) kèm gói **Desktop development with C++** (hoặc cài đặt pre-built wheel tương thích với Python 3.11).
+- **Hệ điều hành**: Windows 10/11, Ubuntu/Debian Linux hoặc macOS.
+- **Tùy chọn A (Triển khai bằng Docker - Khuyến nghị)**: Đã cài đặt [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) hoặc Docker Engine & Docker Compose (Linux).
+- **Tùy chọn B (Cài đặt thủ công)**: Python `3.10` hoặc `3.11` (khuyến nghị **Python 3.11.x**). Trên Windows cần cài [Visual Studio Build Tools C++](https://visualstudio.microsoft.com/) để biên dịch `dlib`.
+- **Phần cứng**: Webcam USB hoặc Camera tích hợp Laptop.
 
 ---
 
-### 2. Các Bước Cài Đặt Chi Tiết (Step-by-Step Setup)
+### 2. Phương Thức 1: Triển Khai Nhanh Với Docker & Docker Compose (Khuyến nghị)
+
+Triển khai bằng Docker giúp đóng gói toàn bộ thư viện C++, Dlib và OpenCV mà **không cần cài đặt môi trường C++ phức tạp** trên máy chủ:
 
 #### Bước 1: Sao chép mã nguồn (Clone Repository)
 ```bash
@@ -249,7 +261,76 @@ git clone https://github.com/your-username/Do_an_AI.git
 cd Do_an_AI
 ```
 
-#### Bước 2: Khởi tạo và kích hoạt môi trường ảo (Virtual Environment)
+#### Bước 2: Khởi chạy dịch vụ với Docker Compose
+```bash
+# Tự động build image và khởi chạy container ngầm (Detached mode)
+docker compose up --build -d
+```
+
+#### Bước 3: Kiểm tra trạng thái và theo dõi Log
+```bash
+# Xem log hoạt động của dịch vụ Streamlit thời gian thực
+docker compose logs -f attendance-system
+
+# Kiểm tra trạng thái container và healthcheck
+docker compose ps
+```
+
+Sau khi container khởi động thành công, truy cập giao diện điểm danh tại: **`http://localhost:8501`**.
+
+#### Bước 4: Dừng dịch vụ
+```bash
+# Dừng và dọn dẹp container (Dữ liệu SQLite và ảnh khuôn mặt vẫn được lưu an toàn)
+docker compose down
+```
+
+---
+
+#### 💡 Tùy Chọn: Chạy Bằng Lệnh `docker run` Độc Lập
+Nếu không sử dụng Docker Compose, bạn có thể build và chạy trực tiếp bằng Docker CLI:
+```bash
+# 1. Build Docker image
+docker build -t smart-face-attendance:latest .
+
+# 2. Khởi chạy container với Persistent Volume mounts
+docker run -d \
+  --name smart_face_attendance \
+  -p 8501:8501 \
+  -v "$(pwd)/data/faces:/app/data/faces" \
+  -v "$(pwd)/models:/app/models" \
+  -v "$(pwd)/attendance.db:/app/attendance.db" \
+  --restart unless-stopped \
+  smart-face-attendance:latest
+```
+
+---
+
+#### ⚙️ Các Lưu Ý Kỹ Thuật Quan Trọng Về Docker (Docker Best Practices):
+1. **Bảo Toàn Dữ Liệu Bền Vững (Persistent Volumes)**:
+   - File [docker-compose.yml](file:///d:/Do_an_AI/docker-compose.yml) đã cấu hình mount các thư mục quan trọng ra máy chủ (Host):
+     - `./data/faces:/app/data/faces`: Lưu trữ tập ảnh khuôn mặt nhân viên đã thu thập.
+     - `./models:/app/models`: Lưu trữ trọng số nhị phân `face_encodings.pkl` và bản đồ nhãn `label_map.json`.
+     - `./attendance.db:/app/attendance.db`: Cơ sở dữ liệu SQLite lưu hồ sơ nhân sự và lịch sử điểm danh.
+   - Khi bạn dừng (`docker compose down`) hoặc xóa container, **toàn bộ dữ liệu chấm công và ảnh nhận diện đều được bảo toàn 100%**.
+2. **Cấu Hình Thiết Bị Webcam Trên Linux (Hardware Passthrough)**:
+   - Khi triển khai trên máy chủ Linux (Ubuntu/Debian) có cắm webcam USB trực tiếp, mở comment dòng `devices` trong file [docker-compose.yml](file:///d:/Do_an_AI/docker-compose.yml):
+     ```yaml
+     devices:
+       - "/dev/video0:/dev/video0"
+     ```
+   - Lệnh này cấp quyền cho container truy cập trực tiếp vào thiết bị camera phần cứng của hệ điều hành.
+3. **Cơ Chế Giám Sát Sức Khỏe (Healthcheck)**:
+   - `Dockerfile` tích hợp sẵn cơ chế kiểm tra định kỳ 30 giây qua endpoint:
+     `curl -f http://localhost:8501/_stcore/health`
+   - Đảm bảo phát hiện và khởi động lại kịp thời nếu máy chủ Streamlit gặp sự cố.
+
+---
+
+### 3. Phương Thức 2: Cài Đặt Thủ Công Bằng Virtualenv (Local Development)
+
+Dành cho nhà phát triển muốn trực tiếp sửa code Python trên máy tính cục bộ:
+
+#### Bước 1: Khởi tạo và kích hoạt môi trường ảo (Virtual Environment)
 - **Trên Windows (PowerShell)**:
   ```powershell
   python -m venv .venv
@@ -261,7 +342,7 @@ cd Do_an_AI
   source .venv/bin/activate
   ```
 
-#### Bước 3: Cài đặt các gói thư viện phụ thuộc
+#### Bước 2: Cài đặt các gói thư viện phụ thuộc
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -271,15 +352,11 @@ pip install -r requirements.txt
 > Danh mục thư viện chính trong `requirements.txt` bao gồm:
 > `streamlit==1.55.0`, `opencv-python==4.13.0.92`, `numpy==2.4.3`, `pandas==2.3.3`, `SQLAlchemy>=2.0.0`, `plotly`, `dlib`, `face-recognition`, `openpyxl`.
 
----
-
-### 3. Vận Hành Ứng Dụng (Running the Application)
-
-Khởi chạy máy chủ giao diện Streamlit:
+#### Bước 3: Khởi chạy máy chủ Streamlit
 ```bash
 streamlit run app.py
 ```
-Sau khi khởi chạy thành công, trình duyệt web mặc định sẽ tự động mở địa chỉ: `http://localhost:8501`.
+Trình duyệt sẽ tự động mở giao diện tại địa chỉ: `http://localhost:8501`.
 
 ---
 
